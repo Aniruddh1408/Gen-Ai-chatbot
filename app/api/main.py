@@ -36,15 +36,7 @@ def ask(request: AskRequest):
     log_ctx = {"trace_id": trace_id, "query": query, "session_id": session_id}
     logger.info("Incoming query received", extra=log_ctx)
 
-    # 1. Firewall: Test for malicious/unrelated prompt injections
-    is_safe = input_guardrail(query)
-    if not is_safe:
-        return {
-            "error": "Query blocked by security guardrails. Please constrain questions strictly to IoT data and hardware analytics.",
-            "trace_id": trace_id,
-        }
-
-    # 2. Memory: Rewrite query using chat history context
+    # 1. Memory: Rewrite query using chat history context — adds context for follow-ups
     rewritten_query = rewrite_query_with_memory(session_id, query)
     if rewritten_query != query:
         logger.info("Query was rewritten by memory agent", extra={
@@ -52,6 +44,16 @@ def ask(request: AskRequest):
             "rewritten": rewritten_query,
             "trace_id": trace_id,
         })
+
+    # 2. Firewall: Test for malicious injections or completely off-topic questions
+    # Note: We check the REWRITTEN query so that contextual follow-ups (e.g. "show more")
+    # are allowed if they refer to IoT data.
+    is_safe = input_guardrail(rewritten_query)
+    if not is_safe:
+        return {
+            "error": "Query blocked by security guardrails. Please constrain questions strictly to IoT data and hardware analytics.",
+            "trace_id": trace_id,
+        }
 
     # 3. Main Execution: Pass to the Multi-Retriever Agent
     try:
@@ -101,3 +103,11 @@ def clear_session_history(session_id: str):
     from app.agents.memory import clear_history
     clear_history(session_id)
     return {"session_id": session_id, "status": "cleared"}
+
+
+@app.get("/debug/guardrail")
+def debug_guardrail(query: str):
+    """Debug endpoint — test guardrail in isolation inside the live server."""
+    from app.agents.guardrails import input_guardrail
+    result = input_guardrail(query)
+    return {"query": query, "allowed": result}
