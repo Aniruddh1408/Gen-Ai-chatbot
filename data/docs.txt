@@ -1,0 +1,7 @@
+When an IoT device flashes red quickly, it usually means the battery firmware requires an OTA update. Do not manually restart the device while it is flashing red.
+
+If the internal temperature sensor registers above 45 degrees Celsius, the device will automatically enter sleep mode. Wait 15 minutes before waking it via the companion app.
+
+Error code E-404 indicates that the device failed to connect to the central WiFi router. Try resetting the router or moving the device closer.
+
+For recalibrating the moisture sensor on the agricultural IoT node, hold down the reset button for 10 seconds until the green light blinks, then release.

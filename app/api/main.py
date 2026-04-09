@@ -1,0 +1,103 @@
+"""
+FastAPI Gateway — Main API endpoint with guardrails, memory, and routing.
+"""
+import time
+import uuid
+from fastapi import FastAPI
+from pydantic import BaseModel
+from app.agents.router import route_query
+from app.agents.guardrails import input_guardrail, output_guardrail
+from app.agents.memory import rewrite_query_with_memory, add_turn, get_history
+from app.core.logger import get_logger
+
+app = FastAPI(
+    title="GenAI IoT Assistant",
+    description="Hybrid GenAI analytics system for IoT data — Text-to-SQL + RAG",
+    version="2.0.0",
+)
+logger = get_logger("api_gateway")
+
+
+class AskRequest(BaseModel):
+    """Request model for the /ask endpoint."""
+    query: str
+    session_id: str = "default"
+
+
+@app.post("/ask")
+def ask(request: AskRequest):
+    start_time = time.time()
+    trace_id = str(uuid.uuid4())
+
+    query = request.query
+    session_id = request.session_id
+
+    # Context dictionary for structured JSON logging
+    log_ctx = {"trace_id": trace_id, "query": query, "session_id": session_id}
+    logger.info("Incoming query received", extra=log_ctx)
+
+    # 1. Firewall: Test for malicious/unrelated prompt injections
+    is_safe = input_guardrail(query)
+    if not is_safe:
+        return {
+            "error": "Query blocked by security guardrails. Please constrain questions strictly to IoT data and hardware analytics.",
+            "trace_id": trace_id,
+        }
+
+    # 2. Memory: Rewrite query using chat history context
+    rewritten_query = rewrite_query_with_memory(session_id, query)
+    if rewritten_query != query:
+        logger.info("Query was rewritten by memory agent", extra={
+            "original": query,
+            "rewritten": rewritten_query,
+            "trace_id": trace_id,
+        })
+
+    # 3. Main Execution: Pass to the Multi-Retriever Agent
+    try:
+        response = route_query(rewritten_query)
+    except Exception as e:
+        logger.error(f"Agent flow crashed: {e}", extra=log_ctx)
+        return {"error": "Internal System Error", "trace_id": trace_id}
+
+    # 4. Output Validation: Check the textual reasoning to ensure no leaked prompts
+    if isinstance(response, dict) and "answer" in response:
+        response["answer"] = output_guardrail(response["answer"])
+
+    # 5. Memory: Store this turn for future context
+    ai_answer = ""
+    if isinstance(response, dict):
+        if "answer" in response:
+            ai_answer = response["answer"]
+        elif "result" in response:
+            ai_answer = str(response["result"])
+    add_turn(session_id, query, ai_answer)
+
+    # 6. Latency Telemetry
+    latency_ms = (time.time() - start_time) * 1000
+    log_ctx["latency_ms"] = latency_ms
+    logger.info("Request completed successfully", extra=log_ctx)
+
+    # Attach tracing stats to the response
+    if isinstance(response, dict):
+        response["trace_id"] = trace_id
+        response["latency_ms"] = latency_ms
+        if rewritten_query != query:
+            response["rewritten_query"] = rewritten_query
+
+    return response
+
+
+@app.get("/history/{session_id}")
+def get_session_history(session_id: str):
+    """Retrieve the chat history for a given session."""
+    history = get_history(session_id)
+    return {"session_id": session_id, "history": history, "turn_count": len(history)}
+
+
+@app.delete("/history/{session_id}")
+def clear_session_history(session_id: str):
+    """Clear the chat history for a given session."""
+    from app.agents.memory import clear_history
+    clear_history(session_id)
+    return {"session_id": session_id, "status": "cleared"}
