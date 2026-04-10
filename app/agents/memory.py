@@ -1,87 +1,111 @@
 """
-Memory — Conversational query rewriter using LangChain.
-Rewrites follow-up questions into standalone queries using chat history context.
-Provides session-based in-memory history storage.
+Memory Agent — Persistent Session Core using Redis.
+Provides high-performance, distributed session history for the AI assistant.
 """
-from collections import defaultdict
+import json
+import redis
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from app.llm.client import llm
+from app.core.config import REDIS_HOST, REDIS_PORT, REDIS_DB
 from app.core.logger import get_logger
 
 logger = get_logger("memory")
 
 # ----------------------------
-# In-memory session store
+# Redis Persistence Client
 # ----------------------------
-# Maps session_id -> list of {"user": ..., "ai": ...} dicts
-# In production, swap this for Redis or a Postgres table.
-_session_store: dict[str, list[dict]] = defaultdict(list)
+# Initialize Redis connection
+try:
+    _redis_client = redis.Redis(
+        host=REDIS_HOST,
+        port=REDIS_PORT,
+        db=REDIS_DB,
+        decode_responses=True # Returns strings instead of bytes
+    )
+    # Test connection
+    _redis_client.ping()
+    logger.info(f"Redis connected successfully at {REDIS_HOST}:{REDIS_PORT}")
+except Exception as e:
+    logger.error(f"Redis connection failed: {e}. Falling back to in-memory (limited session lifetime).")
+    _redis_client = None
 
-MAX_HISTORY_TURNS = 5  # Sliding window to prevent token overflow
+# Fallback store if Redis is unavailable
+_memory_fallback: dict[str, list[dict]] = {}
 
+MAX_HISTORY_TURNS = 3  # Reduced to save CPU/Heat and keep context focused
 
 def get_history(session_id: str) -> list[dict]:
-    """Retrieve the chat history for a session."""
-    return _session_store.get(session_id, [])
-
+    """Retrieve chat history from Redis (or memory fallback)."""
+    key = f"kubo_session:{session_id}"
+    
+    if _redis_client:
+        try:
+            data = _redis_client.get(key)
+            return json.loads(data) if data else []
+        except Exception as e:
+            logger.error(f"Failed to fetch from Redis: {e}")
+            return []
+    
+    return _memory_fallback.get(session_id, [])
 
 def add_turn(session_id: str, user_msg: str, ai_msg: str):
-    """Append a turn to the session history, enforcing the sliding window."""
-    _session_store[session_id].append({"user": user_msg, "ai": ai_msg})
-    # Trim to last N turns
-    if len(_session_store[session_id]) > MAX_HISTORY_TURNS:
-        _session_store[session_id] = _session_store[session_id][-MAX_HISTORY_TURNS:]
-
+    """Save a turn to Redis with a TTL (Time To Live)."""
+    history = get_history(session_id)
+    history.append({"user": user_msg, "ai": ai_msg})
+    
+    # Keep only the last N turns
+    history = history[-MAX_HISTORY_TURNS:]
+    
+    key = f"kubo_session:{session_id}"
+    if _redis_client:
+        try:
+            # Store as JSON string with a 24-hour expiration
+            _redis_client.setex(key, 86400, json.dumps(history))
+        except Exception as e:
+            logger.error(f"Failed to save to Redis: {e}")
+    else:
+        _memory_fallback[session_id] = history
 
 def clear_history(session_id: str):
-    """Clear the chat history for a session."""
-    _session_store.pop(session_id, None)
-
+    """Delete session history."""
+    key = f"kubo_session:{session_id}"
+    if _redis_client:
+        _redis_client.delete(key)
+    else:
+        _memory_fallback.pop(session_id, None)
 
 # ----------------------------
 # Query Rewriter Chain
 # ----------------------------
 _rewrite_prompt = ChatPromptTemplate.from_messages([
-    ("system", """You are a Query Rewriter.
-Your ONLY job is to rewrite the User's New Query into a standalone sentence using the context of the Chat History.
-DO NOT ANSWER THE QUESTION. DO NOT PROVIDE TROUBLESHOOTING ADVICE.
-ONLY OUTPUT THE REWRITTEN QUERY.
+    ("system", """You are a grammatical query re-writing tool.
+You do NOT answer questions. You do NOT apologize. You only output the REWRITTEN QUERY.
+Replace pronouns in the New Query with the specific subject from the History Context.
+If the New Query is a completely new topic or does not use pronouns, return the New Query exactly as it is.
+NEVER answer the question or provide information.
 
-Example 1:
-History:
-User: What is the signal for dev1?
-AI: The signal is 50.
-TARGET QUERY TO REWRITE: Can you graph that for room2?
-Your Output: What is the signal for dev1 in room2?
-
-Example 2:
-History:
-User: My device is flashing red.
-AI: Do not restart it.
-TARGET QUERY TO REWRITE: Why not?
-Your Output: Why shouldn't I manually restart the flashing red device?
-
-CHAT HISTORY TO EVALUATE:
-{history_text}
-
-TARGET QUERY TO REWRITE: {new_query}
-Your Output:"""),
-    ("human", "Rewrite the query strictly based on instructions."),
+Example:
+History: 
+User: Tell me about John.
+AI: John is 90 years old.
+Human: What is his BP?
+Output: What is John's BP?
+"""),
+    ("human", "History:\n{history_text}\n\nNew Query: {new_query}\n\nOutput ONLY the rewritten query:"),
 ])
 
 _rewrite_chain = _rewrite_prompt | llm | StrOutputParser()
 
-
 def rewrite_query_with_memory(session_id: str, new_query: str) -> str:
-    """
-    QUERY REWRITER AGENT (Memory Context)
-    Rewrites a conversational follow-up into a standalone query using session history.
-    Returns the original query if there's no history.
-    """
     chat_history = get_history(session_id)
-
     if not chat_history:
+        return new_query
+
+    # OPTIMIZATION: Skip LLM rewrite for very simple greetings or short queries
+    # This saves one LLM roundtrip (approx 1-2s on slow hardware)
+    q_lower = new_query.lower().strip()
+    if len(q_lower.split()) <= 2 and any(w in q_lower for w in ["hi", "hello", "hey", "help", "thanks", "bye"]):
         return new_query
 
     history_text = "\n".join([f"User: {msg['user']}\nAI: {msg['ai']}" for msg in chat_history])
@@ -91,8 +115,8 @@ def rewrite_query_with_memory(session_id: str, new_query: str) -> str:
             "history_text": history_text,
             "new_query": new_query,
         }).strip()
-        logger.info("Query rewritten", extra={"original": new_query, "rewritten": rewritten})
+        logger.info(f"Query Refined: {rewritten}")
         return rewritten if rewritten else new_query
     except Exception as e:
-        logger.error(f"Query rewrite failed: {e}")
+        logger.error(f"Rewrite failed: {e}")
         return new_query

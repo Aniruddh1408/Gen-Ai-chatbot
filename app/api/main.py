@@ -1,20 +1,44 @@
-"""
-FastAPI Gateway — Main API endpoint with guardrails, memory, and routing.
-"""
-import time
-import uuid
 from fastapi import FastAPI
 from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+import os
+import time
+import uuid
+
 from app.agents.router import route_query
 from app.agents.guardrails import input_guardrail, output_guardrail
 from app.agents.memory import rewrite_query_with_memory, add_turn, get_history
 from app.core.logger import get_logger
 
 app = FastAPI(
-    title="GenAI IoT Assistant",
-    description="Hybrid GenAI analytics system for IoT data — Text-to-SQL + RAG",
-    version="2.0.0",
+    title="KuboCare AI Assistant",
+    description="Intelligent Hybrid Analytics for IoT and Healthcare",
+    version="2.1.0",
 )
+
+# Enable CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Deployment: Serve Frontend
+frontend_path = os.path.join(os.path.dirname(__file__), "..", "frontend")
+app.mount("/static", StaticFiles(directory=frontend_path), name="static")
+
+@app.get("/")
+def read_root():
+    return FileResponse(os.path.join(frontend_path, "index.html"))
+
+@app.get("/health")
+def health_check():
+    return {"status": "healthy", "timestamp": time.time()}
+
 logger = get_logger("api_gateway")
 
 

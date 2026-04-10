@@ -27,13 +27,18 @@ _INJECTION_PATTERNS = [
 ]
 _INJECTION_RE = re.compile("|".join(_INJECTION_PATTERNS), re.IGNORECASE)
 
-# IoT-related keywords — if a query contains ANY of these, it's likely valid
-_IOT_KEYWORDS = [
+# Domain-related keywords — if a query contains ANY of these, it's likely valid
+_DOMAIN_KEYWORDS = [
     # Device & hardware terms
     "device", "sensor", "board", "dev1", "dev2", "dev3", "dev4", "dev5",
     "iot", "hardware", "firmware", "ota", "wifi", "router", "gateway",
     "microcontroller", "esp32", "arduino", "raspberry", "node", "unit",
     "active", "offline", "online", "connected", "connection",
+    # Healthcare & Resident terms
+    "resident", "flat", "age", "medical", "history", "prescribed", "intake",
+    "medication", "doctor", "health", "report", "bp", "blood pressure",
+    "systolic", "diastolic", "sugar", "glucose", "steps", "sleep", "analytics",
+    "quality", "duration", "patient", "score",
     # Metrics & analytics terms
     "signal", "uptime", "cpu", "temperature", "moisture", "battery",
     "humidity", "pressure", "voltage", "current", "power", "energy",
@@ -44,14 +49,14 @@ _IOT_KEYWORDS = [
     # Troubleshooting terms
     "flashing", "error", "reset", "recalibrate", "calibrat", "blink",
     "sleep mode", "e-404", "red light", "green light", "trouble", "broken",
-    "fix", "issue", "problem", "fault", "diagnostic", "status", "health",
+    "fix", "issue", "problem", "fault", "diagnostic", "status",
     # Database/analytics terms
     "metric", "data", "query", "table", "report", "analytics", "graph", "chart",
     "yesterday", "today", "last hour", "last week", "month", "year",
-    # Common conversational IoT helpers
+    # Common conversational helpers
     "list", "show", "find", "check", "get", "tell", "monitor", "help",
 ]
-_IOT_KEYWORDS_RE = re.compile("|".join(re.escape(k) for k in _IOT_KEYWORDS), re.IGNORECASE)
+_DOMAIN_KEYWORDS_RE = re.compile("|".join(re.escape(k) for k in _DOMAIN_KEYWORDS), re.IGNORECASE)
 
 
 def input_guardrail(query: str) -> bool:
@@ -71,13 +76,13 @@ def input_guardrail(query: str) -> bool:
         logger.info("Query blocked by injection detection", extra={"query": query})
         return False
 
-    # Step 2: Conversational flexibility — ALLOW very short greetings or "help"
-    # This allows the LLM to handle basic social context or explain its purpose.
-    if len(query_lower.split()) <= 2 and any(w in query_lower for w in ["hi", "hello", "hey", "help", "who", "what"]):
+    # Step 2: Conversational flexibility — ALLOW short greetings or introductions
+    # Relaxed to 5 words to allow "Hey i am ankit"
+    if len(query_lower.split()) <= 5 and any(w in query_lower for w in ["hi", "hello", "hey", "help", "who", "what", "ankit", "i am"]):
         return True
 
-    # Step 3: Check for IoT-related keywords — ALLOW if found
-    if _IOT_KEYWORDS_RE.search(query_lower):
+    # Step 3: Check for domain-related keywords — ALLOW if found
+    if _DOMAIN_KEYWORDS_RE.search(query_lower):
         return True
 
     # Step 4: No IoT keywords found — block as off-topic
