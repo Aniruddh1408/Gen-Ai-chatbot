@@ -20,22 +20,24 @@ _plan_chain = _plan_prompt | llm | StrOutputParser()
 
 # 2. Results Synthesis
 _synthesis_prompt = ChatPromptTemplate.from_messages([
-    ("system", """You are a Clinical Data Summarizer. 
+    ("system", """You are an Intelligent Clinical Data Summarizer. 
 The following data was SUCCESSFULLY retrieved from the internal clinical database. 
 Your task is to summarize this data for the attending physician.
 
 STRICT RULES:
-1. NEVER say you don't have access to data; the data is provided below.
-2. If the 'Data' is empty [], say: 'No matching records found for this resident.'
-3. Be professional, clinical, and concise.
-4. If asked about a resident, always include their name if present in the data."""),
+1. You must answer using ONLY the data provided below.
+2. Be professional, clinical, and concise.
+3. If asked about a resident, always include their name if present in the data.
+4. Auto-Insights: Briefly mention any noticeable health patterns or basic logic (e.g. if BP is high).
+5. Formatting: If the user asks for a list or bullet points, use markdown bullets.
+"""),
     ("human", "User Query: {query}\nRetrieved Database Data: {results}\nProfessional Summary:"),
 ])
 _synthesis_chain = _synthesis_prompt | llm | StrOutputParser()
 
 def build_sql(plan: dict) -> tuple[str, list]:
-    table = plan.get("table", "device_status")
-    column = plan.get("column", "*")
+    table = plan.get("table", "residents")
+    column = plan.get("column", "residents.name")
     order_by = plan.get("order_by")
     
     # 1. CLEAN ORDER BY: Strip existing ASC/DESC to prevent 'DESC DESC' errors
@@ -50,26 +52,55 @@ def build_sql(plan: dict) -> tuple[str, list]:
     
     # Handle auto-join for resident names
     from_clause = table
-    if "residents." in column or any("residents." in str(f.get("column", "")) for f in plan.get("filters", [])):
-        if table != "residents":
+    # DEFENSIVE: Only attempt .get() if f is actually a dictionary
+    filters_list = plan.get("filters", [])
+    if not isinstance(filters_list, list):
+        filters_list = []
+        
+    has_resident_filter = any(
+        isinstance(f, dict) and "residents." in str(f.get("column", "")) 
+        for f in filters_list
+    )
+    
+    if "residents." in column or has_resident_filter:
+        if table != "residents" and "residents" not in table:
             from_clause = f"{table} JOIN residents ON {table}.resident_id = residents.id"
 
     sql = f"SELECT {column} FROM {from_clause}"
     
     conditions = []
     params = []
-    for f in plan.get("filters", []):
+    
+    # DEFENSIVE: Ensure filters is actually a list of dictionaries
+    raw_filters = plan.get("filters", [])
+    if isinstance(raw_filters, dict):
+        raw_filters = [raw_filters]
+    if not isinstance(raw_filters, list):
+        raw_filters = []
+        
+    for f in raw_filters:
+        if not isinstance(f, dict):
+            continue
+            
         col = f.get("column")
         op = f.get("operator", "=")
         val = f.get("value")
         if col and val is not None:
             # 2. IMPROVEMENT: Use ILIKE for case-insensitive name matching
             if "name" in col.lower() and op == "=":
+                clean_val = str(val).replace("'s", "").replace("’s", "").strip()
                 conditions.append(f"{col} ILIKE %s")
+                params.append(f"%{clean_val}%")
             else:
                 conditions.append(f"{col} {op} %s")
-            params.append(val)
+                params.append(val)
             
+    # 3. SAFETY: Ensure limit is a valid integer to prevent "LIMIT None" errors
+    try:
+        limit = int(limit)
+    except (ValueError, TypeError):
+        limit = 10
+
     if conditions:
         sql += " WHERE " + " AND ".join(conditions)
     if order_by:
@@ -78,9 +109,49 @@ def build_sql(plan: dict) -> tuple[str, list]:
     
     return sql, params
 
+import re
+
+def clean_json(json_str: str) -> str:
+    """Removes trailing commas from JSON string to prevent parse errors."""
+    # Remove trailing commas before matching closing brackets
+    json_str = re.sub(r',\s*}', '}', json_str)
+    json_str = re.sub(r',\s*]', ']', json_str)
+    return json_str
+
 def handle_sql(query: str) -> dict:
     try:
-        # Step 1: Generate & Parse Plan
+        # MACRO BYPASS: Handle complex multi-metric "Care" analytics
+        complex_keywords = ["more care", "less care", "overall health", "all metrics", "comprehensive", "needs care", "need care"]
+        q_lower = query.lower()
+        if any(w in q_lower for w in complex_keywords):
+            logger.info("Executing comprehensive care macro...")
+            sql = """
+            SELECT r.name, r.age, r.health_medical_history, 
+                   h.bp_systolic, h.bp_diastolic, h.sugar_level, 
+                   s.sleep_quality_score, a.steps_count 
+            FROM residents r
+            LEFT JOIN health_reports h ON r.id = h.resident_id
+            LEFT JOIN sleep_analytics s ON r.id = s.resident_id
+            LEFT JOIN activity_metrics a ON r.id = a.resident_id
+            LIMIT 10;
+            """
+            result = run_query(sql)
+            
+            # Use synthesize chain for the macro result
+            answer = _synthesis_chain.invoke({
+                "query": query, 
+                "results": f"Macro Care Assessment Data: {result}\nReview this data horizontally to determine who needs more or less care."
+            })
+            
+            return {
+                "query": query,
+                "plan": {"macro": "comprehensive_care_analysis"},
+                "sql": sql,
+                "result": result,
+                "answer": answer
+            }
+
+        # Step 1: Generate & Parse Plan (Normal Single-Table Mode)
         plan_str = _plan_chain.invoke({"system_prompt": get_system_prompt(), "query": query}).strip()
         
         if not plan_str:
@@ -92,17 +163,23 @@ def handle_sql(query: str) -> dict:
             plan_str = parts[1] if len(parts) > 1 else parts[0]
             if plan_str.startswith("json"): plan_str = plan_str[4:]
         
+        plan_str = clean_json(plan_str.strip())
+        
         try:
-            plan = json.loads(plan_str.strip())
+            plan = json.loads(plan_str)
         except json.JSONDecodeError as je:
             logger.error(f"JSON Parse failed on: {plan_str}")
             # FALLBACK: Try to extract anything between { }
             if "{" in plan_str and "}" in plan_str:
                 start = plan_str.find("{")
                 end = plan_str.rfind("}") + 1
-                plan = json.loads(plan_str[start:end])
+                plan = json.loads(clean_json(plan_str[start:end]))
             else:
                 raise ValueError("The AI got confused and failed to generate a valid data plan for this query.")
+                
+        # STRICT VALIDATION: Ensure the parsed plan is actually a dictionary
+        if not isinstance(plan, dict):
+            raise ValueError("The AI generated a JSON structure, but it was not a valid dictionary plan.")
 
         logger.info(f"SQL Plan Generated: {plan}")
         
@@ -125,12 +202,69 @@ def handle_sql(query: str) -> dict:
 
         answer = _synthesis_chain.invoke({"query": query, "results": str(result)})
         
+        # CHART GENERATOR OVERRIDE
+        chart_payload = None
+        q_lower = query.lower()
+        visual_keywords = ["chart", "graph", "plot", "visualize", "show stats", "comparison"]
+        if result and any(w in q_lower for w in visual_keywords):
+            # Determine dynamic chart type
+            chart_type = "bar"
+            if "pie" in q_lower: chart_type = "pie"
+            elif "line" in q_lower: chart_type = "line"
+            elif "doughnut" in q_lower or "donut" in q_lower: chart_type = "doughnut"
+
+            # Parse results flexibly
+            labels = []
+            data_points = []
+            
+            for i, row in enumerate(result):
+                if len(row) >= 2:
+                    # Case: (Name, Value, ...)
+                    labels.append(str(row[0]))
+                    # Find the first float-able value after the label
+                    val = 0
+                    for cell in row[1:]:
+                        try:
+                            val = float(cell)
+                            break
+                        except (ValueError, TypeError): continue
+                    data_points.append(val)
+                else:
+                    # Case: (Value,) — No name column provided by LLM
+                    labels.append(f"Resident {i+1}")
+                    try:
+                        data_points.append(float(row[0]))
+                    except (ValueError, TypeError):
+                        data_points.append(0)
+                    
+            chart_payload = {
+                "type": chart_type,
+                "data": {
+                    "labels": labels,
+                    "datasets": [{
+                        "label": "Requested Health Metric",
+                        "data": data_points,
+                        "backgroundColor": ["#38bdf8", "#818cf8", "#4ade80", "#fbbf24", "#f87171", "#c084fc"],
+                        "borderColor": "rgba(255, 255, 255, 0.1)",
+                        "borderWidth": 1
+                    }]
+                },
+                "options": {
+                    "responsive": True,
+                    "maintainAspectRatio": False,
+                    "plugins": {
+                        "legend": { "display": chart_type != "bar" }
+                    }
+                }
+            }
+        
         return {
             "query": query,
             "plan": plan,
             "sql": sql,
             "result": result,
-            "answer": answer
+            "answer": answer,
+            "chart_data": chart_payload
         }
     except Exception as e:
         logger.error(f"SQL Pipeline error: {e}")

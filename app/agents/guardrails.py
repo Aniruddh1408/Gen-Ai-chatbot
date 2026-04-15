@@ -55,6 +55,7 @@ _DOMAIN_KEYWORDS = [
     "yesterday", "today", "last hour", "last week", "month", "year",
     # Common conversational helpers
     "list", "show", "find", "check", "get", "tell", "monitor", "help",
+    "care", "context", "question", "follow", "mean", "who"
 ]
 _DOMAIN_KEYWORDS_RE = re.compile("|".join(re.escape(k) for k in _DOMAIN_KEYWORDS), re.IGNORECASE)
 

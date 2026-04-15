@@ -29,9 +29,10 @@ FORCE_SQL_WORDS = [
     "resident", "residence", "bp", "sugar", "step", "sleep", "medical", "intake", 
     "metric", "report", "analysis", "score", "glucose", "systolic", "diastolic",
     "low", "high", "avg", "average", "sum", "count", "history", "record", 
-    "less", "more", "than", "older", "younger", "oldest", "youngest"
+    "less", "more", "than", "older", "younger", "oldest", "youngest",
+    "care", "who is", "condition", "overall", "health"
 ]
-FORCE_CHAT_WORDS = ["chat", "previous", "who are you", "hi", "hello", "hey", "help", "greet", "thanks", "bye"]
+FORCE_CHAT_WORDS = ["chat", "previous", "what are you", "hi", "hello", "hey", "help", "greet", "thanks", "bye"]
 
 def classify_intent(query: str) -> str:
     q = query.lower()

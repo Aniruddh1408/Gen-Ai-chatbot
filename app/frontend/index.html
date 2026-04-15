@@ -5,6 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>KuboCare | Intelligent Healthcare Assistant</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&family=Inter:wght@400;500&display=swap"
         rel="stylesheet">
     <style>
@@ -40,7 +41,7 @@
 
         .chat-container {
             width: 95%;
-            max-width: 1000px;
+            max-width: 1200px;
             height: 90vh;
             background: var(--glass-bg);
             backdrop-filter: blur(12px);
@@ -210,9 +211,17 @@
         }
 
         @keyframes pulse {
-            0% { opacity: 0.5; }
-            50% { opacity: 1; }
-            100% { opacity: 0.5; }
+            0% {
+                opacity: 0.5;
+            }
+
+            50% {
+                opacity: 1;
+            }
+
+            100% {
+                opacity: 0.5;
+            }
         }
 
         .loader-dots {
@@ -233,12 +242,25 @@
             animation: dotBounce 1.4s infinite ease-in-out both;
         }
 
-        .dot:nth-child(1) { animation-delay: -0.32s; }
-        .dot:nth-child(2) { animation-delay: -0.16s; }
+        .dot:nth-child(1) {
+            animation-delay: -0.32s;
+        }
+
+        .dot:nth-child(2) {
+            animation-delay: -0.16s;
+        }
 
         @keyframes dotBounce {
-            0%, 80%, 100% { transform: scale(0); }
-            40% { transform: scale(1.0); }
+
+            0%,
+            80%,
+            100% {
+                transform: scale(0);
+            }
+
+            40% {
+                transform: scale(1.0);
+            }
         }
 
         .insight-box {
@@ -303,13 +325,73 @@
 
         let currentAbortController = null;
 
-        function addMessage(role, text, isError = false) {
+        function addMessage(role, text, isError = false, chartData = null) {
             const msgDiv = document.createElement('div');
             msgDiv.className = `message ${role}`;
             if (isError) msgDiv.style.borderColor = '#ef4444';
 
             const meta = role === 'user' ? 'You' : 'Kubo Analyst';
-            msgDiv.innerHTML = `<span class="message-meta">${meta}</span>${text}`;
+            // Convert markdown formatting logic manually for bullets if present
+            let formattedText = text.replace(/\n\* /g, '<br>• ');
+            msgDiv.innerHTML = `<span class="message-meta">${meta}</span>${formattedText}`;
+
+            if (chartData && role === 'ai') {
+                const chartWrapper = document.createElement('div');
+                chartWrapper.style.marginTop = '15px';
+                chartWrapper.style.height = '300px';
+                chartWrapper.style.position = 'relative';
+                chartWrapper.style.backgroundColor = 'rgba(15, 23, 42, 0.4)';
+                chartWrapper.style.borderRadius = '12px';
+                chartWrapper.style.padding = '15px';
+                chartWrapper.style.border = '1px solid rgba(255,255,255,0.05)';
+
+                const canvas = document.createElement('canvas');
+                chartWrapper.appendChild(canvas);
+                msgDiv.appendChild(chartWrapper);
+
+                const controls = document.createElement('div');
+                controls.style.display = 'flex';
+                controls.style.gap = '8px';
+                controls.style.marginTop = '8px';
+
+                const downloadBtn = document.createElement('button');
+                downloadBtn.innerText = '⬇ Download';
+                downloadBtn.style.padding = '4px 10px';
+                downloadBtn.style.fontSize = '0.75rem';
+                downloadBtn.style.background = 'rgba(56, 189, 248, 0.2)';
+
+                const colorBtn = document.createElement('button');
+                colorBtn.innerText = '🎨 Change Color';
+                colorBtn.style.padding = '4px 10px';
+                colorBtn.style.fontSize = '0.75rem';
+                colorBtn.style.background = 'rgba(129, 140, 248, 0.2)';
+
+                controls.appendChild(downloadBtn);
+                controls.appendChild(colorBtn);
+                msgDiv.appendChild(controls);
+
+                Chart.defaults.color = '#f1f5f9';
+                const chart = new Chart(canvas.getContext('2d'), chartData);
+
+                downloadBtn.onclick = () => {
+                    const link = document.createElement('a');
+                    link.download = `kubocare_report_${Date.now()}.png`;
+                    link.href = canvas.toDataURL('image/png');
+                    link.click();
+                };
+
+                const palettes = [
+                    ['#38bdf8', '#818cf8', '#4ade80', '#fbbf24', '#f87171'],
+                    ['#ec4899', '#f43f5e', '#f97316', '#eab308', '#84cc16'],
+                    ['#06b6d4', '#3b82f6', '#6366f1', '#a855f7', '#d946ef']
+                ];
+                let pIdx = 0;
+                colorBtn.onclick = () => {
+                    pIdx = (pIdx + 1) % palettes.length;
+                    chart.data.datasets[0].backgroundColor = palettes[pIdx];
+                    chart.update();
+                };
+            }
 
             chatHistory.appendChild(msgDiv);
             chatHistory.scrollTop = chatHistory.scrollHeight;
@@ -333,7 +415,7 @@
 
             userInput.value = '';
             addMessage('user', query);
-            
+
             // UI State: Loading
             typingIndicator.style.display = 'block';
             sendBtn.style.display = 'none';
@@ -350,7 +432,7 @@
                 });
 
                 const data = await response.json();
-                
+
                 // UI State: Back to normal
                 typingIndicator.style.display = 'none';
                 sendBtn.style.display = 'block';
@@ -360,7 +442,7 @@
                 if (data.error) {
                     addMessage('ai', "Error: " + data.error, true);
                 } else {
-                    addMessage('ai', data.answer);
+                    addMessage('ai', data.answer, false, data.chart_data);
                     console.log("Trace ID:", data.trace_id);
                 }
             } catch (err) {

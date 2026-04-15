@@ -42,12 +42,14 @@ def get_history(session_id: str) -> list[dict]:
     if _redis_client:
         try:
             data = _redis_client.get(key)
-            return json.loads(data) if data else []
+            history = json.loads(data) if data else []
+            return history if isinstance(history, list) else []
         except Exception as e:
             logger.error(f"Failed to fetch from Redis: {e}")
             return []
     
-    return _memory_fallback.get(session_id, [])
+    history = _memory_fallback.get(session_id, [])
+    return history if isinstance(history, list) else []
 
 def add_turn(session_id: str, user_msg: str, ai_msg: str):
     """Save a turn to Redis with a TTL (Time To Live)."""

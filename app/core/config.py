@@ -16,7 +16,7 @@ DB_PORT = os.getenv("DB_PORT")
 
 # --- Ollama LLM ---
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")# LLM Parameters
-LLM_MODEL = os.getenv("LLM_MODEL", "qwen2:1.5b")
+LLM_MODEL = os.getenv("LLM_MODEL", "gemma2:2b")
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", 0.0))
 
 # Redis Memory Persistence
