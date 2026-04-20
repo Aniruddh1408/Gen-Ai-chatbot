@@ -4,9 +4,7 @@ Provides high-performance, distributed session history for the AI assistant.
 """
 import json
 import redis
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-from app.llm.client import llm
+from app.llm.client import ask_llm
 from app.core.config import REDIS_HOST, REDIS_PORT, REDIS_DB
 from app.core.logger import get_logger
 
@@ -34,6 +32,10 @@ except Exception as e:
 _memory_fallback: dict[str, list[dict]] = {}
 
 MAX_HISTORY_TURNS = 3  # Reduced to save CPU/Heat and keep context focused
+ACKNOWLEDGEMENT_WORDS = [
+    "ok", "okay", "ohk", "oh okay", "fine", "alright", "got it", "cool", "understood",
+    "thanks", "thank you", "noted", "sure", "yep", "yes", "no", "nah", "gotcha"
+]
 
 def get_history(session_id: str) -> list[dict]:
     """Retrieve chat history from Redis (or memory fallback)."""
@@ -77,46 +79,37 @@ def clear_history(session_id: str):
     else:
         _memory_fallback.pop(session_id, None)
 
-# ----------------------------
-# Query Rewriter Chain
-# ----------------------------
-_rewrite_prompt = ChatPromptTemplate.from_messages([
-    ("system", """You are a grammatical query re-writing tool.
+_REWRITE_SYSTEM_PROMPT = """You are a grammatical query re-writing tool.
 You do NOT answer questions. You do NOT apologize. You only output the REWRITTEN QUERY.
 Replace pronouns in the New Query with the specific subject from the History Context.
 If the New Query is a completely new topic or does not use pronouns, return the New Query exactly as it is.
 NEVER answer the question or provide information.
 
 Example:
-History: 
+History:
 User: Tell me about John.
 AI: John is 90 years old.
 Human: What is his BP?
 Output: What is John's BP?
-"""),
-    ("human", "History:\n{history_text}\n\nNew Query: {new_query}\n\nOutput ONLY the rewritten query:"),
-])
-
-_rewrite_chain = _rewrite_prompt | llm | StrOutputParser()
+"""
 
 def rewrite_query_with_memory(session_id: str, new_query: str) -> str:
     chat_history = get_history(session_id)
     if not chat_history:
         return new_query
 
-    # OPTIMIZATION: Skip LLM rewrite for very simple greetings or short queries
-    # This saves one LLM roundtrip (approx 1-2s on slow hardware)
+    # Skip rewriting conversational acknowledgements and greetings.
     q_lower = new_query.lower().strip()
-    if len(q_lower.split()) <= 2 and any(w in q_lower for w in ["hi", "hello", "hey", "help", "thanks", "bye"]):
+    if len(q_lower.split()) <= 3 and any(w in q_lower for w in ["hi", "hello", "hey", "help", "bye"] + ACKNOWLEDGEMENT_WORDS):
         return new_query
 
     history_text = "\n".join([f"User: {msg['user']}\nAI: {msg['ai']}" for msg in chat_history])
 
     try:
-        rewritten = _rewrite_chain.invoke({
-            "history_text": history_text,
-            "new_query": new_query,
-        }).strip()
+        rewritten = ask_llm(
+            f"History:\n{history_text}\n\nNew Query: {new_query}\n\nOutput ONLY the rewritten query:",
+            system_prompt=_REWRITE_SYSTEM_PROMPT,
+        ).strip()
         logger.info(f"Query Refined: {rewritten}")
         return rewritten if rewritten else new_query
     except Exception as e:
