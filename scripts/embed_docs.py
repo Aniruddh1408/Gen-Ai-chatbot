@@ -3,18 +3,24 @@ import sys
 import json
 import requests
 import psycopg2
+from dotenv import load_dotenv
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # Add parent dir to path so we can import from app
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+load_dotenv()
+
 OLLAMA_EMBED_URL = "http://localhost:11434/api/embeddings"
 EMBED_MODEL = "mxbai-embed-large"
+CHUNK_SIZE = 900
+CHUNK_OVERLAP = 80
 
-# NOTE: The insert script usually requires writer permissions
-# Make sure this user has an INSERT grant on the `documents` table!
-DB_USER = "genai_reader"
-DB_PASS = "7012"
-DB_NAME = "genai_db"
+DB_NAME = os.getenv("DB_NAME")
+DB_USER = os.getenv("DB_USER")
+DB_PASS = os.getenv("DB_PASS")
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "5433")
 
 
 def get_embedding(text):
@@ -26,6 +32,15 @@ def get_embedding(text):
         return res.json().get("embedding", [])
     print(f"[WARN] Failed to embed: {res.text}")
     return []
+
+
+def build_chunks(content):
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP,
+        separators=["\n\n", "\n", ". ", " ", ""],
+    )
+    return [chunk.strip() for chunk in splitter.split_text(content) if chunk.strip()]
 
 
 def main():
@@ -42,18 +57,18 @@ def main():
         print("docs.txt is empty. Add some text first!")
         return
 
-    # Basic chunking: split by double newlines (paragraphs)
-    chunks = [c.strip() for c in content.split("\n\n") if c.strip()]
+    # Recursive chunking keeps paragraph meaning while handling longer sections better.
+    chunks = build_chunks(content)
 
     print(f"Found {len(chunks)} chunks to embed.")
 
     # Connect directly for inserting (need write permissions)
     conn = psycopg2.connect(
-        dbname="genai_db",
-        user="ankitjha",
-        password="7012",
-        host="localhost",
-        port="5432"
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASS,
+        host=DB_HOST,
+        port=DB_PORT
     )
     cur = conn.cursor()
 
