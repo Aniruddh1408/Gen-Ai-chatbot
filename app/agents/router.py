@@ -33,6 +33,10 @@ FORCE_SQL_WORDS = [
     "care", "who is", "condition", "overall", "health"
 ]
 FORCE_CHAT_WORDS = ["chat", "previous", "what are you", "hi", "hello", "hey", "help", "greet", "thanks", "bye"]
+ACKNOWLEDGEMENT_WORDS = [
+    "ok", "okay", "fine", "alright", "got it", "cool", "understood",
+    "thanks", "thank you", "noted", "sure", "yep", "yes"
+]
 
 def classify_intent(query: str) -> str:
     q = query.lower()
@@ -42,7 +46,7 @@ def classify_intent(query: str) -> str:
         return "SQL"
     
     # 2. PRIORITY 2: Force Chat (Greetings/Social)
-    if any(w in q for w in FORCE_CHAT_WORDS): 
+    if any(w in q for w in FORCE_CHAT_WORDS) or q.strip() in ACKNOWLEDGEMENT_WORDS:
         return "CHAT"
     
     # 3. PRIORITY 3: LLM Classification Fallback
@@ -61,6 +65,8 @@ def route_query(query: str) -> dict:
     intent = classify_intent(query)
     
     if intent == "CHAT":
+        if query.lower().strip() in ACKNOWLEDGEMENT_WORDS:
+            return {"query": query, "answer": "It was my pleasure to help. Please feel free to ask anything else."}
         answer = ask_llm(query, system_prompt="You are a Healthcare AI. Answer conversationally.")
         return {"query": query, "answer": answer}
 
