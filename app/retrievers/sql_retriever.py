@@ -2,26 +2,15 @@
 SQL Retriever — Text-to-SQL pipeline with English synthesis.
 """
 import json
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-from app.llm.client import llm, get_system_prompt
-from app.schema.schema import SCHEMA, schema_to_text
+import re
+from app.llm.client import ask_llm, ask_sql_planner
 from app.core.db import run_query
 from app.core.logger import get_logger
 
 logger = get_logger("sql_retriever")
 
-# 1. Plan Generation
-_plan_prompt = ChatPromptTemplate.from_messages([
-    ("system", "{system_prompt}"),
-    ("human", "{query}"),
-])
-_plan_chain = _plan_prompt | llm | StrOutputParser()
-
-# 2. Results Synthesis
-_synthesis_prompt = ChatPromptTemplate.from_messages([
-    ("system", """You are an Intelligent Clinical Data Summarizer. 
-The following data was SUCCESSFULLY retrieved from the internal clinical database. 
+_SYNTHESIS_SYSTEM_PROMPT = """You are an Intelligent Clinical Data Summarizer.
+The following data was SUCCESSFULLY retrieved from the internal clinical database.
 Your task is to summarize this data for the attending physician.
 
 STRICT RULES:
@@ -30,10 +19,7 @@ STRICT RULES:
 3. If asked about a resident, always include their name if present in the data.
 4. Auto-Insights: Briefly mention any noticeable health patterns or basic logic (e.g. if BP is high).
 5. Formatting: If the user asks for a list or bullet points, use markdown bullets.
-"""),
-    ("human", "User Query: {query}\nRetrieved Database Data: {results}\nProfessional Summary:"),
-])
-_synthesis_chain = _synthesis_prompt | llm | StrOutputParser()
+"""
 
 def build_sql(plan: dict) -> tuple[str, list]:
     table = plan.get("table", "residents")
@@ -109,14 +95,46 @@ def build_sql(plan: dict) -> tuple[str, list]:
     
     return sql, params
 
-import re
-
 def clean_json(json_str: str) -> str:
     """Removes trailing commas from JSON string to prevent parse errors."""
     # Remove trailing commas before matching closing brackets
     json_str = re.sub(r',\s*}', '}', json_str)
     json_str = re.sub(r',\s*]', ']', json_str)
     return json_str
+
+def normalize_filters(plan: dict) -> dict:
+    """Convert drifted string filters into structured filter objects."""
+    raw_filters = plan.get("filters", [])
+    if isinstance(raw_filters, dict):
+        raw_filters = [raw_filters]
+    if not isinstance(raw_filters, list):
+        raw_filters = []
+
+    normalized = []
+    for item in raw_filters:
+        if isinstance(item, dict):
+            normalized.append(item)
+            continue
+        if not isinstance(item, str):
+            continue
+
+        match = re.match(
+            r"^\s*([a-zA-Z_][\w\.]*)\s*(=|!=|>=|<=|>|<|ILIKE)\s*'?(.+?)'?\s*$",
+            item,
+            re.IGNORECASE,
+        )
+        if not match:
+            continue
+
+        col, op, value = match.groups()
+        normalized.append({
+            "column": col,
+            "operator": op.upper() if op.upper() == "ILIKE" else op,
+            "value": value,
+        })
+
+    plan["filters"] = normalized
+    return plan
 
 def handle_sql(query: str) -> dict:
     try:
@@ -138,10 +156,10 @@ def handle_sql(query: str) -> dict:
             result = run_query(sql)
             
             # Use synthesize chain for the macro result
-            answer = _synthesis_chain.invoke({
-                "query": query, 
-                "results": f"Macro Care Assessment Data: {result}\nReview this data horizontally to determine who needs more or less care."
-            })
+            answer = ask_llm(
+                f"User Query: {query}\nRetrieved Database Data: Macro Care Assessment Data: {result}\nReview this data horizontally to determine who needs more or less care.\nProfessional Summary:",
+                system_prompt=_SYNTHESIS_SYSTEM_PROMPT,
+            )
             
             return {
                 "query": query,
@@ -152,8 +170,12 @@ def handle_sql(query: str) -> dict:
             }
 
         # Step 1: Generate & Parse Plan (Normal Single-Table Mode)
-        plan_str = _plan_chain.invoke({"system_prompt": get_system_prompt(), "query": query}).strip()
-        
+        plan_str = ask_sql_planner(query)
+
+        if not plan_str:
+            retry_query = f"Convert this user request into one JSON SQL plan only: {query}"
+            plan_str = ask_sql_planner(retry_query)
+
         if not plan_str:
              raise ValueError("Planner returned an empty response.")
 
@@ -181,6 +203,7 @@ def handle_sql(query: str) -> dict:
         if not isinstance(plan, dict):
             raise ValueError("The AI generated a JSON structure, but it was not a valid dictionary plan.")
 
+        plan = normalize_filters(plan)
         logger.info(f"SQL Plan Generated: {plan}")
         
         # Step 2: Build & Execute SQL
@@ -200,7 +223,10 @@ def handle_sql(query: str) -> dict:
                 "answer": f"I couldn't find any clinical records matching '{query}' in the database."
             }
 
-        answer = _synthesis_chain.invoke({"query": query, "results": str(result)})
+        answer = ask_llm(
+            f"User Query: {query}\nRetrieved Database Data: {result}\nProfessional Summary:",
+            system_prompt=_SYNTHESIS_SYSTEM_PROMPT,
+        )
         
         # CHART GENERATOR OVERRIDE
         chart_payload = None
