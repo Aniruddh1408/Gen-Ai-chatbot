@@ -2,8 +2,8 @@
 LLM Client — LangChain + Ollama integration.
 """
 import datetime
+import requests
 from langchain_ollama import ChatOllama
-from langchain_core.messages import SystemMessage, HumanMessage
 from app.core.config import OLLAMA_BASE_URL, LLM_MODEL, LLM_TEMPERATURE
 from app.schema.schema import SCHEMA, schema_to_text
 
@@ -19,11 +19,7 @@ llm = ChatOllama(
 def get_system_prompt():
     """Default SQL planner system prompt with live date injection."""
     now = datetime.datetime.now()
-    current_time = now.strftime("%Y-%m-%d %H:%M:%S")
     current_date = now.strftime("%Y-%m-%d")
-    yesterday_date = (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-    three_days_ago = (now - datetime.timedelta(days=3)).strftime("%Y-%m-%d")
-    
     schema_text = schema_to_text(SCHEMA)
 
     return f"""
@@ -67,8 +63,88 @@ RULE: For "lowest", "fewest", "least", "less", use ORDER_DIRECTION: "ASC" with L
 RULE: For "highest", "most", "best", use ORDER_DIRECTION: "DESC" with LIMIT 1.
 """
 
+def get_sql_planner_prompt() -> str:
+    """Short, strict planner prompt optimized for smaller local models."""
+    schema_text = schema_to_text(SCHEMA)
+
+    return """
+Return exactly one JSON object.
+Do not use markdown.
+Do not explain anything.
+Do not return empty output.
+
+Allowed tables:
+- residents
+- health_reports
+- activity_metrics
+- sleep_analytics
+- device_status
+
+Relationships:
+- residents.id = health_reports.resident_id
+- residents.id = activity_metrics.resident_id
+- residents.id = sleep_analytics.resident_id
+
+Rules:
+- For resident metric queries, include residents.name in column.
+- Never use '*'.
+- filters must be a list of objects like {"column":"residents.name","operator":"=","value":"Ravi Kumar"}.
+- If user asks for lowest/least/fewest, use order_direction ASC and limit 1.
+- If user asks for highest/most/best, use order_direction DESC and limit 1.
+- If no filters are needed, return "filters": [].
+
+Valid JSON shape:
+{
+  "table": "sleep_analytics",
+  "column": "residents.name, sleep_quality_score",
+  "filters": [],
+  "order_by": "sleep_quality_score",
+  "order_direction": "ASC",
+  "limit": 1
+}
+
+Schema:
+""" + schema_text
+
+def ask_sql_planner(query: str) -> str:
+    """Call Ollama directly for SQL planning to avoid empty ChatOllama planner responses."""
+    return ask_with_messages(
+        get_sql_planner_prompt(),
+        query,
+        response_format="json",
+        num_predict=120,
+        temperature=0.0,
+    )
+
+def ask_with_messages(
+    system_prompt: str,
+    user_prompt: str,
+    response_format: str | None = None,
+    num_predict: int = 160,
+    temperature: float | None = None,
+) -> str:
+    """Call Ollama chat API directly and return assistant content."""
+    payload = {
+        "model": LLM_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "think": False,
+        "options": {
+            "num_predict": num_predict,
+            "temperature": LLM_TEMPERATURE if temperature is None else temperature,
+        },
+        "stream": False,
+    }
+    if response_format:
+        payload["format"] = response_format
+
+    response = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=180)
+    response.raise_for_status()
+    data = response.json()
+    return data.get("message", {}).get("content", "").strip()
+
 def ask_llm(query: str, system_prompt: str = None) -> str:
     sys_prompt = system_prompt if system_prompt else get_system_prompt()
-    messages = [SystemMessage(content=sys_prompt), HumanMessage(content=query)]
-    response = llm.invoke(messages)
-    return response.content
+    return ask_with_messages(sys_prompt, query)
