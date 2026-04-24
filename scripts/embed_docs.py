@@ -11,10 +11,12 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 load_dotenv()
 
-OLLAMA_EMBED_URL = "http://localhost:11434/api/embeddings"
-EMBED_MODEL = "mxbai-embed-large"
+OLLAMA_EMBED_URL = os.getenv("EMBED_BASE_URL", "http://localhost:11434") + "/api/embeddings"
+EMBED_MODEL = os.getenv("EMBED_MODEL", "mxbai-embed-large")
 CHUNK_SIZE = 900
 CHUNK_OVERLAP = 80
+HTTP_SESSION = requests.Session()
+HTTP_SESSION.trust_env = False
 
 DB_NAME = os.getenv("DB_NAME")
 DB_USER = os.getenv("DB_USER")
@@ -24,7 +26,7 @@ DB_PORT = os.getenv("DB_PORT", "5433")
 
 
 def get_embedding(text):
-    res = requests.post(
+    res = HTTP_SESSION.post(
         OLLAMA_EMBED_URL,
         json={"model": EMBED_MODEL, "prompt": text}
     )

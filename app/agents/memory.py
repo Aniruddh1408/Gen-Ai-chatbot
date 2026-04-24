@@ -36,6 +36,11 @@ ACKNOWLEDGEMENT_WORDS = [
     "ok", "okay", "ohk", "oh okay", "fine", "alright", "got it", "cool", "understood",
     "thanks", "thank you", "noted", "sure", "yep", "yes", "no", "nah", "gotcha"
 ]
+_SHORT_CHAT_RE = re.compile(
+    r"\b(?:hi|hello|hey|help|bye|ok|okay|ohk|oh\ okay|fine|alright|got\ it|cool|understood|"
+    r"thanks|thank\ you|noted|sure|yep|yes|no|nah|gotcha)\b",
+    re.IGNORECASE,
+)
 
 def get_history(session_id: str) -> list[dict]:
     """Retrieve chat history from Redis (or memory fallback)."""
@@ -93,6 +98,36 @@ Human: What is his BP?
 Output: What is John's BP?
 """
 
+_FOLLOW_UP_MARKERS = {
+    "he", "she", "they", "them", "their", "theirs", "his", "her", "hers",
+    "it", "its", "that", "those", "these", "same", "former", "latter",
+    "also", "too", "again", "more", "another", "compare", "comparison",
+}
+
+_FOLLOW_UP_PHRASES = [
+    "what about",
+    "how about",
+    "show more",
+    "tell me more",
+    "same person",
+    "same resident",
+    "same device",
+    "that resident",
+    "that device",
+]
+
+
+def _needs_history_rewrite(new_query: str) -> bool:
+    q_lower = new_query.lower().strip()
+    if not q_lower:
+        return False
+
+    if any(phrase in q_lower for phrase in _FOLLOW_UP_PHRASES):
+        return True
+
+    words = {word.strip(".,?!") for word in q_lower.split()}
+    return any(word in words for word in _FOLLOW_UP_MARKERS)
+
 def rewrite_query_with_memory(session_id: str, new_query: str) -> str:
     chat_history = get_history(session_id)
     if not chat_history:
@@ -100,7 +135,10 @@ def rewrite_query_with_memory(session_id: str, new_query: str) -> str:
 
     # Skip rewriting conversational acknowledgements and greetings.
     q_lower = new_query.lower().strip()
-    if len(q_lower.split()) <= 3 and any(w in q_lower for w in ["hi", "hello", "hey", "help", "bye"] + ACKNOWLEDGEMENT_WORDS):
+    if len(q_lower.split()) <= 3 and _SHORT_CHAT_RE.search(q_lower):
+        return new_query
+
+    if not _needs_history_rewrite(new_query):
         return new_query
 
     history_text = "\n".join([f"User: {msg['user']}\nAI: {msg['ai']}" for msg in chat_history])

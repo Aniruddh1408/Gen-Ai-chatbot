@@ -83,7 +83,7 @@ def ask(request: AskRequest):
     try:
         response = route_query(rewritten_query)
     except Exception as e:
-        logger.error(f"Agent flow crashed: {e}", extra=log_ctx)
+        logger.exception(f"Agent flow crashed: {e}", extra=log_ctx)
         return {"error": "Internal System Error", "trace_id": trace_id}
 
     # 4. Output Validation: Check the textual reasoning to ensure no leaked prompts

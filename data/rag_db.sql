@@ -53,7 +53,7 @@ INSERT INTO residents (id, name, flat_no, age, health_medical_history, medical_i
 (1, 'John Mathew', 'A-101', 78, 'Hypertension, Type 2 Diabetes', 'Metformin, Amlodipine'),
 (2, 'Mary Dsouza', 'A-102', 82, 'Arthritis, Mild Asthma', 'Paracetamol, Salbutamol'),
 (3, 'Ravi Kumar', 'B-201', 74, 'Cardiovascular disease', 'Atorvastatin, Aspirin'),
-(4, 'Fatima Ali', 'B-202', 80, 'Osteoporosis', 'Calcium, Vitamin D'),
+(4, 'Jason Murphy', 'B-202', 80, 'Osteoporosis', 'Calcium, Vitamin D'),
 (5, 'Anil Sharma', 'C-301', 69, 'Pre-diabetes, Hypertension', 'Telmisartan');
 
 INSERT INTO health_reports (resident_id, bp_systolic, bp_diastolic, sugar_level, recorded_at) VALUES

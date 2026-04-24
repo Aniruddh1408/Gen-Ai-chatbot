@@ -1,20 +1,30 @@
 """
-LLM Client — LangChain + Ollama integration.
+LLM client for a vLLM OpenAI-compatible server.
 """
 import datetime
-import requests
-from langchain_ollama import ChatOllama
-from app.core.config import OLLAMA_BASE_URL, LLM_MODEL, LLM_TEMPERATURE
+
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
+
+from app.core.config import (
+    LLM_API_KEY,
+    LLM_BASE_URL,
+    LLM_MODEL,
+    LLM_TEMPERATURE,
+    LLM_TIMEOUT_SECONDS,
+)
 from app.schema.schema import SCHEMA, schema_to_text
 
-# Shared LLM instance
-llm = ChatOllama(
+# Shared LLM instance for lightweight calls such as intent classification.
+llm = ChatOpenAI(
     model=LLM_MODEL,
-    base_url=OLLAMA_BASE_URL,
+    base_url=LLM_BASE_URL,
+    api_key=LLM_API_KEY,
     temperature=LLM_TEMPERATURE,
-    num_predict=256,   # Limit generation length to save CPU/Heat
-    num_ctx=2048,      # Smaller context window for faster processing
+    max_tokens=256,
+    timeout=LLM_TIMEOUT_SECONDS,
 )
+
 
 def get_system_prompt():
     """Default SQL planner system prompt with live date injection."""
@@ -33,7 +43,7 @@ SCHEMA:
 
 JSON FORMAT RULES:
 1. table: Must be one of the schema tables.
-2. column: ALWAYS select "residents.name" along with the metric you need (e.g., "residents.name, steps_count"). Never use "*". 
+2. column: ALWAYS select "residents.name" along with the metric you need (e.g., "residents.name, steps_count"). Never use "*".
 3. filters: List of column, operator, value. NEVER create time or date filters (assume all DB data is recent).
 4. order_by: Column name if user asks for highest, lowest, best, worst.
 
@@ -60,8 +70,9 @@ Result:
 }}
 
 RULE: For "lowest", "fewest", "least", "less", use ORDER_DIRECTION: "ASC" with LIMIT 1.
-RULE: For "highest", "most", "best", use ORDER_DIRECTION: "DESC" with LIMIT 1.
+RULE: For "highest", "most", "best", "top", use ORDER_DIRECTION: "DESC" with LIMIT 1.
 """
+
 
 def get_sql_planner_prompt() -> str:
     """Short, strict planner prompt optimized for smaller local models."""
@@ -106,8 +117,9 @@ Valid JSON shape:
 Schema:
 """ + schema_text
 
+
 def ask_sql_planner(query: str) -> str:
-    """Call Ollama directly for SQL planning to avoid empty ChatOllama planner responses."""
+    """Call vLLM directly for SQL planning."""
     return ask_with_messages(
         get_sql_planner_prompt(),
         query,
@@ -116,6 +128,7 @@ def ask_sql_planner(query: str) -> str:
         temperature=0.0,
     )
 
+
 def ask_with_messages(
     system_prompt: str,
     user_prompt: str,
@@ -123,27 +136,22 @@ def ask_with_messages(
     num_predict: int = 160,
     temperature: float | None = None,
 ) -> str:
-    """Call Ollama chat API directly and return assistant content."""
-    payload = {
-        "model": LLM_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "think": False,
-        "options": {
-            "num_predict": num_predict,
-            "temperature": LLM_TEMPERATURE if temperature is None else temperature,
-        },
-        "stream": False,
+    """Call the vLLM OpenAI-compatible chat API and return assistant content."""
+    invoke_kwargs = {
+        "temperature": LLM_TEMPERATURE if temperature is None else temperature,
+        "max_tokens": num_predict,
     }
-    if response_format:
-        payload["format"] = response_format
+    if response_format == "json":
+        invoke_kwargs["response_format"] = {"type": "json_object"}
 
-    response = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=180)
-    response.raise_for_status()
-    data = response.json()
-    return data.get("message", {}).get("content", "").strip()
+    temp_llm = llm.bind(**invoke_kwargs)
+    response = temp_llm.invoke([
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=user_prompt),
+    ])
+
+    return response.content.strip() if isinstance(response.content, str) else str(response.content).strip()
+
 
 def ask_llm(query: str, system_prompt: str = None) -> str:
     sys_prompt = system_prompt if system_prompt else get_system_prompt()

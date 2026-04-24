@@ -1,9 +1,9 @@
 """
-Guardrails - Input validation and output sanitization.
-Uses deterministic keyword/regex rules instead of LLM for reliability.
-The small qwen2:1.5b model is too inconsistent for binary classification tasks.
+Guardrails - input validation and output sanitization.
+Uses deterministic keyword and regex rules instead of an LLM for reliability.
 """
 import re
+
 from app.core.logger import get_logger
 
 logger = get_logger("guardrails")
@@ -12,8 +12,6 @@ logger = get_logger("guardrails")
 # ----------------------------
 # Input Guardrail (Keyword-Based)
 # ----------------------------
-
-# Injection patterns - queries matching these are ALWAYS blocked
 _INJECTION_PATTERNS = [
     r"ignore\s+(all\s+)?(previous\s+)?instructions",
     r"forget\s+(everything|all|previous)",
@@ -27,7 +25,6 @@ _INJECTION_PATTERNS = [
 ]
 _INJECTION_RE = re.compile("|".join(_INJECTION_PATTERNS), re.IGNORECASE)
 
-# Domain-related keywords - if a query contains ANY of these, it's likely valid
 _DOMAIN_KEYWORDS = [
     "device", "sensor", "board", "dev1", "dev2", "dev3", "dev4", "dev5",
     "iot", "hardware", "firmware", "ota", "wifi", "router", "gateway",
@@ -48,22 +45,30 @@ _DOMAIN_KEYWORDS = [
     "metric", "data", "query", "table", "report", "analytics", "graph", "chart",
     "yesterday", "today", "last hour", "last week", "month", "year",
     "list", "show", "find", "check", "get", "tell", "monitor", "help",
-    "care", "context", "question", "follow", "mean", "who",
+    "care", "context", "question", "follow", "mean",
 ]
-_DOMAIN_KEYWORDS_RE = re.compile("|".join(re.escape(k) for k in _DOMAIN_KEYWORDS), re.IGNORECASE)
+_DOMAIN_KEYWORDS_RE = re.compile("|".join(re.escape(keyword) for keyword in _DOMAIN_KEYWORDS), re.IGNORECASE)
 _ACKNOWLEDGEMENT_WORDS = {
     "ok", "okay", "fine", "alright", "got it", "cool", "understood",
     "thanks", "thank you", "noted", "sure", "yep", "yes",
 }
+_RESIDENT_LOOKUP_PATTERNS = [
+    r"\b(?:give|show|tell|find|get)\b.*\b(?:details?|detail|record|history|information|info)\b.*\b(?:of|for|about)\b\s+[a-z]+(?:\s+[a-z]+){1,2}\b",
+    r"\b(?:details?|detail|record|history|information|info)\b\s+(?:of|for)\s+[a-z]+(?:\s+[a-z]+){1,2}\b",
+    r"\b(?:tell|show|give)\s+me\s+about\s+[a-z]+(?:\s+[a-z]+){1,2}\b",
+    r"\bwho\s+is\s+[a-z]+(?:\s+[a-z]+){1,2}\b",
+]
+_RESIDENT_LOOKUP_RE = re.compile("|".join(_RESIDENT_LOOKUP_PATTERNS), re.IGNORECASE)
 
 
 def input_guardrail(query: str) -> bool:
     """
-    INPUT GUARDRAIL - Deterministic keyword-based approach.
-    1. Block injection attempts (regex blacklist)
-    2. Allow if IoT/health keywords are present (keyword whitelist)
-    3. Allow short conversational acknowledgements
-    4. Block everything else (safe default)
+    Input guardrail.
+    1. Block injection attempts.
+    2. Allow greetings and acknowledgements.
+    3. Allow resident lookups phrased with names.
+    4. Allow recognized domain keywords.
+    5. Block everything else.
     """
     if not query or not query.strip():
         return False
@@ -75,17 +80,20 @@ def input_guardrail(query: str) -> bool:
         return False
 
     if len(query_lower.split()) <= 5 and any(
-        w in query_lower for w in ["hi", "hello", "hey", "help", "who", "what", "ankit", "i am"]
+        word in query_lower for word in ["hi", "hello", "hey", "help", "ankit", "i am"]
     ):
         return True
 
     if query_lower in _ACKNOWLEDGEMENT_WORDS:
         return True
 
+    if _RESIDENT_LOOKUP_RE.search(query_lower):
+        return True
+
     if _DOMAIN_KEYWORDS_RE.search(query_lower):
         return True
 
-    logger.info("Query blocked: no IoT keywords detected", extra={"query": query})
+    logger.info("Query blocked: no domain keywords detected", extra={"query": query})
     return False
 
 
@@ -108,11 +116,7 @@ _BAD_PATTERN = re.compile("|".join(_BAD_PHRASES), re.IGNORECASE)
 
 
 def output_guardrail(answer_text: str) -> str:
-    """
-    OUTPUT GUARDRAIL
-    A heuristic + regex check to verify that the generated LLM response hasn't
-    fallen into catastrophic hallucination, prompt leaking, or exposed backend internals.
-    """
+    """Basic output guardrail for prompt leaks and obvious backend internals."""
     if not answer_text or not isinstance(answer_text, str):
         return "No response generated."
 
