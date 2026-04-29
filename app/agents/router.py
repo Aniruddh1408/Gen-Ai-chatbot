@@ -36,16 +36,23 @@ FORCE_RAG_WORDS = [
     "error code", "e-404", "sleep mode", "companion app",
 ]
 FORCE_SQL_WORDS = [
-    "resident", "residence", "bp", "sugar", "step", "sleep", "medical", "intake",
+    "resident", "residence", "age", "flat", "room", "bp", "sugar", "step", "sleep", "medical", "intake",
     "metric", "report", "analysis", "score", "glucose", "systolic", "diastolic",
     "low", "high", "avg", "average", "sum", "count", "history", "record",
-    "less", "more", "than", "older", "younger", "oldest", "youngest",
+    "older", "younger", "oldest", "youngest",
     "care", "who is", "condition", "overall", "health", "signal", "uptime",
     "cpu", "temperature", "humidity", "pressure", "voltage", "current",
     "power", "energy", "device status",
 ]
+FORCE_SQL_PHRASES = [
+    "more than", "less than", "higher than", "lower than",
+]
 FORCE_CHAT_EXACT = {"hi", "hello", "hey", "help", "thanks", "thank you", "bye"}
 FORCE_CHAT_PHRASES = ["what are you", "previous chat", "chat history", "greet yourself"]
+FORCE_CHAT_PREFIXES = [
+    "what is", "what are", "explain", "define", "meaning of",
+    "how does", "how do", "why does", "why is",
+]
 SQL_LOOKUP_PHRASES = [
     "details of", "detail of", "information on", "information about",
     "tell me about", "show me details of", "give the details of",
@@ -63,6 +70,14 @@ GREETING_RESPONSES = {
 
 _NAME_LOOKUP_RE = re.compile(r"\b[a-z]+(?:\s+[a-z]+){1,2}\b")
 
+_GENERIC_EXPLANATION_SQL_BLOCKERS = [
+    "resident", "patient", "age", "flat", "room", "history", "intake",
+    "report", "metric", "average", "avg", "count", "sum", "highest", "lowest",
+    "best", "worst", "most", "least", "top", "bottom", "chart", "graph",
+    "compare", "comparison", "details", "detail", "record", "records",
+    "more than", "less than", "higher than", "lower than",
+]
+
 
 def _looks_like_resident_lookup(query: str) -> bool:
     if any(_contains_term(query, word) for word in FORCE_RAG_WORDS):
@@ -72,16 +87,48 @@ def _looks_like_resident_lookup(query: str) -> bool:
     return _NAME_LOOKUP_RE.search(query) is not None
 
 
+def _looks_like_generic_explanatory_query(query: str) -> bool:
+    q = query.lower().strip()
+    if not any(q.startswith(prefix) for prefix in FORCE_CHAT_PREFIXES):
+        return False
+    if _looks_like_resident_lookup(q):
+        return False
+    for hint in _GENERIC_EXPLANATION_SQL_BLOCKERS:
+        if " " in hint:
+            if hint in q:
+                return False
+        elif _contains_term(q, hint):
+            return False
+    return True
+
+
+def _format_chat_history(chat_history: list[dict] | None, limit: int = 3) -> str:
+    if not chat_history:
+        return ""
+
+    recent_turns = chat_history[-limit:]
+    return "\n".join(
+        f"User: {turn.get('user', '')}\nAssistant: {turn.get('ai', '')}"
+        for turn in recent_turns
+    ).strip()
+
+
 def classify_intent(query: str) -> str:
     q = query.lower().strip()
+
+    if q in FORCE_CHAT_EXACT or any(_contains_term(q, phrase) for phrase in FORCE_CHAT_PHRASES) or q in ACKNOWLEDGEMENT_WORDS:
+        return "CHAT"
+
+    if _looks_like_generic_explanatory_query(q):
+        return "RAG"
 
     if any(_contains_term(q, word) for word in FORCE_RAG_WORDS):
         return "RAG"
 
-    if any(_contains_term(q, word) for word in FORCE_SQL_WORDS) or _looks_like_resident_lookup(q):
+    if any(_contains_term(q, word) for word in FORCE_SQL_WORDS) or any(phrase in q for phrase in FORCE_SQL_PHRASES) or _looks_like_resident_lookup(q):
         return "SQL"
 
-    if q in FORCE_CHAT_EXACT or any(_contains_term(q, phrase) for phrase in FORCE_CHAT_PHRASES) or q in ACKNOWLEDGEMENT_WORDS:
+    if any(q.startswith(prefix) for prefix in FORCE_CHAT_PREFIXES):
         return "CHAT"
 
     try:
@@ -95,9 +142,10 @@ def classify_intent(query: str) -> str:
         return "SQL"
 
 
-def route_query(query: str) -> dict:
+def route_query(query: str, original_query: str | None = None, chat_history: list[dict] | None = None) -> dict:
     intent = classify_intent(query)
-    q_lower = query.lower().strip()
+    raw_query = (original_query or query).strip()
+    q_lower = raw_query.lower().strip()
 
     if intent == "CHAT":
         if q_lower in ACKNOWLEDGEMENT_WORDS:
@@ -105,7 +153,20 @@ def route_query(query: str) -> dict:
         if q_lower in GREETING_RESPONSES:
             return {"query": query, "answer": GREETING_RESPONSES[q_lower]}
         try:
-            answer = ask_llm(query, system_prompt="You are a Healthcare AI. Answer conversationally.")
+            history_text = _format_chat_history(chat_history)
+            chat_input = raw_query
+            if history_text:
+                chat_input = f"Recent Conversation:\n{history_text}\n\nCurrent User Message: {raw_query}"
+
+            answer = ask_llm(
+                chat_input,
+                system_prompt=(
+                    "You are a Healthcare AI. Use the recent conversation to resolve follow-up messages naturally. "
+                    "Answer clearly and concisely by default. For simple questions, keep the answer to 2-4 sentences "
+                    "unless the user asks for detail. If the current message is too vague and the recent context does "
+                    "not clearly determine the topic, ask a short clarification question."
+                ),
+            )
             return {"query": query, "answer": answer}
         except Exception as e:
             logger.error(f"Chat response failed: {e}")

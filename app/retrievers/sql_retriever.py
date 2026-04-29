@@ -21,6 +21,229 @@ STRICT RULES:
 5. Formatting: If the user asks for a list or bullet points, use markdown bullets.
 """
 
+_RESIDENT_PROFILE_RULES = [
+    {
+        "name": "age",
+        "patterns": [r"\bage\b", r"\bhow old\b", r"\bold is\b"],
+        "column": "residents.name, residents.age",
+    },
+    {
+        "name": "flat_no",
+        "patterns": [r"\bflat\b", r"\bflat no\b", r"\bflat number\b", r"\broom\b"],
+        "column": "residents.name, residents.flat_no",
+    },
+    {
+        "name": "medical_history",
+        "patterns": [r"\bmedical history\b", r"\bhealth history\b", r"\bhistory\b"],
+        "column": "residents.name, residents.health_medical_history",
+    },
+    {
+        "name": "medical_intake",
+        "patterns": [r"\bprescribed\b", r"\bintake\b", r"\bmedication\b", r"\btreatment plan\b"],
+        "column": "residents.name, residents.medical_intake_prescribed",
+    },
+]
+
+_METRIC_RANKING_RULES = [
+    {
+        "name": "sleep_quality_score",
+        "table": "sleep_analytics",
+        "column": "residents.name, sleep_quality_score",
+        "order_by": "sleep_quality_score",
+        "label": "sleep score",
+        "patterns": [
+            r"\bsleep score\b",
+            r"\bsleep quality\b",
+            r"\bsleep quality score\b",
+        ],
+    },
+    {
+        "name": "sleep_duration_minutes",
+        "table": "sleep_analytics",
+        "column": "residents.name, sleep_duration_minutes",
+        "order_by": "sleep_duration_minutes",
+        "label": "sleep duration",
+        "patterns": [
+            r"\bsleep duration\b",
+            r"\bsleep time\b",
+            r"\bslept\b",
+        ],
+    },
+    {
+        "name": "steps_count",
+        "table": "activity_metrics",
+        "column": "residents.name, steps_count",
+        "order_by": "steps_count",
+        "label": "step count",
+        "patterns": [
+            r"\bsteps\b",
+            r"\bstep count\b",
+            r"\bwalking\b",
+        ],
+    },
+    {
+        "name": "sugar_level",
+        "table": "health_reports",
+        "column": "residents.name, sugar_level",
+        "order_by": "sugar_level",
+        "label": "sugar level",
+        "patterns": [
+            r"\bsugar\b",
+            r"\bglucose\b",
+        ],
+    },
+    {
+        "name": "bp_systolic",
+        "table": "health_reports",
+        "column": "residents.name, bp_systolic",
+        "order_by": "bp_systolic",
+        "label": "systolic blood pressure",
+        "patterns": [
+            r"\bbp\b",
+            r"\bblood pressure\b",
+            r"\bsystolic\b",
+        ],
+    },
+]
+
+_ASC_RANKING_PATTERNS = [
+    r"\bworst\b",
+    r"\blowest\b",
+    r"\bleast\b",
+    r"\bfewest\b",
+    r"\bbottom\b",
+]
+
+_DESC_RANKING_PATTERNS = [
+    r"\bbest\b",
+    r"\bhighest\b",
+    r"\bmost\b",
+    r"\btop\b",
+]
+
+
+def _extract_resident_name(query: str) -> str | None:
+    q = query.lower().replace("’", "'").strip()
+    patterns = [
+        r"\b([a-z]+(?:\s+[a-z]+){1,2})'s\b",
+        r"\b(?:resident|patient)\s+([a-z]+(?:\s+[a-z]+){1,2})\b",
+        r"\b(?:of|for|about)\s+([a-z]+(?:\s+[a-z]+){1,2})\b",
+        r"\b(?:of|for|about)\s+(?:the\s+)?(?:resident|patient)\s+([a-z]+(?:\s+[a-z]+){1,2})\b",
+        r"\b([a-z]+(?:\s+[a-z]+){1,2})\s+(?:medical history|health history|treatment plan|flat(?:\s+(?:number|no))?|room|age|history|intake|prescribed|medication)\b",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, q)
+        if match:
+            candidate = match.group(1).strip(" .,?!")
+            candidate = re.sub(r"^(?:what|who|is|the|of|for|about|resident|patient)\s+", "", candidate).strip()
+            candidate = re.sub(
+                r"\s+(?:medical|health|treatment|plan|flat|number|no|room|age|history|intake|prescribed|medication)$",
+                "",
+                candidate,
+            ).strip()
+            if candidate not in {"his", "her", "their", "the resident", "the patient"}:
+                return candidate.title()
+    return None
+
+
+def _detect_resident_profile_plan(query: str) -> dict | None:
+    resident_name = _extract_resident_name(query)
+    if not resident_name:
+        return None
+
+    q_lower = query.lower()
+    for rule in _RESIDENT_PROFILE_RULES:
+        if any(re.search(pattern, q_lower) for pattern in rule["patterns"]):
+            return {
+                "table": "residents",
+                "column": rule["column"],
+                "filters": [{"column": "residents.name", "operator": "=", "value": resident_name}],
+                "limit": 1,
+                "_profile_field": rule["name"],
+            }
+    return None
+
+
+def _format_resident_profile_answer(profile_field: str, result: list[tuple]) -> str | None:
+    if not result:
+        return None
+
+    row = result[0]
+    if len(row) < 2:
+        return None
+
+    resident_name = str(row[0]).strip()
+    field_value = row[1]
+
+    if field_value in (None, ""):
+        return f"I couldn't find {profile_field.replace('_', ' ')} for {resident_name} in the database."
+
+    if profile_field == "age":
+        return f"{resident_name} is {field_value} years old."
+    if profile_field == "flat_no":
+        return f"{resident_name}'s flat number is {field_value}."
+    if profile_field == "medical_history":
+        return f"{resident_name}'s medical history is: {field_value}"
+    if profile_field == "medical_intake":
+        return f"{resident_name}'s prescribed medical intake is: {field_value}"
+    return None
+
+
+def _detect_metric_ranking_plan(query: str) -> dict | None:
+    q_lower = query.lower()
+
+    order_direction = None
+    if any(re.search(pattern, q_lower) for pattern in _ASC_RANKING_PATTERNS):
+        order_direction = "ASC"
+    elif any(re.search(pattern, q_lower) for pattern in _DESC_RANKING_PATTERNS):
+        order_direction = "DESC"
+
+    if not order_direction:
+        return None
+
+    for rule in _METRIC_RANKING_RULES:
+        if any(re.search(pattern, q_lower) for pattern in rule["patterns"]):
+            return {
+                "table": rule["table"],
+                "column": rule["column"],
+                "filters": [],
+                "order_by": rule["order_by"],
+                "order_direction": order_direction,
+                "limit": 1,
+                "_metric_name": rule["name"],
+                "_metric_label": rule["label"],
+            }
+    return None
+
+
+def _format_metric_ranking_answer(query: str, plan: dict, result: list[tuple]) -> str | None:
+    if not result:
+        return None
+
+    row = result[0]
+    if len(row) < 2:
+        return None
+
+    resident_name = str(row[0]).strip()
+    metric_value = row[1]
+    metric_label = plan.get("_metric_label", "metric")
+    q_lower = query.lower()
+
+    if plan.get("_metric_name") == "bp_systolic":
+        metric_text = f"{metric_value} mmHg"
+    elif plan.get("_metric_name") == "sleep_duration_minutes":
+        metric_text = f"{metric_value} minutes"
+    else:
+        metric_text = str(metric_value)
+
+    if any(re.search(pattern, q_lower) for pattern in _ASC_RANKING_PATTERNS):
+        qualifier = "worst" if "sleep" in metric_label else "lowest"
+    else:
+        qualifier = "best" if "sleep" in metric_label else "highest"
+
+    return f"The resident with the {qualifier} {metric_label} is {resident_name}, with {metric_label} {metric_text}."
+
 def build_sql(plan: dict) -> tuple[str, list]:
     table = plan.get("table", "residents")
     column = plan.get("column", "residents.name")
@@ -138,6 +361,65 @@ def normalize_filters(plan: dict) -> dict:
 
 def handle_sql(query: str) -> dict:
     try:
+        direct_metric_plan = _detect_metric_ranking_plan(query)
+        if direct_metric_plan:
+            logger.info(f"Using deterministic metric ranking plan: {direct_metric_plan}")
+            sql, params = build_sql(direct_metric_plan)
+            result = run_query(sql, params)
+
+            if not result:
+                return {
+                    "query": query,
+                    "plan": direct_metric_plan,
+                    "sql": sql,
+                    "result": result,
+                    "answer": f"I couldn't find matching records for '{query}'.",
+                }
+
+            answer = _format_metric_ranking_answer(query, direct_metric_plan, result) or ask_llm(
+                f"User Query: {query}\nRetrieved Database Data: {result}\nProfessional Summary:",
+                system_prompt=_SYNTHESIS_SYSTEM_PROMPT,
+            )
+
+            return {
+                "query": query,
+                "plan": direct_metric_plan,
+                "sql": sql,
+                "result": result,
+                "answer": answer,
+            }
+
+        direct_profile_plan = _detect_resident_profile_plan(query)
+        if direct_profile_plan:
+            logger.info(f"Using deterministic resident profile plan: {direct_profile_plan}")
+            sql, params = build_sql(direct_profile_plan)
+            result = run_query(sql, params)
+
+            if not result:
+                return {
+                    "query": query,
+                    "plan": direct_profile_plan,
+                    "sql": sql,
+                    "result": result,
+                    "answer": f"I couldn't find matching resident records for '{query}'.",
+                }
+
+            answer = _format_resident_profile_answer(
+                direct_profile_plan["_profile_field"],
+                result,
+            ) or ask_llm(
+                f"User Query: {query}\nRetrieved Database Data: {result}\nProfessional Summary:",
+                system_prompt=_SYNTHESIS_SYSTEM_PROMPT,
+            )
+
+            return {
+                "query": query,
+                "plan": direct_profile_plan,
+                "sql": sql,
+                "result": result,
+                "answer": answer,
+            }
+
         # MACRO BYPASS: Handle complex multi-metric "Care" analytics
         complex_keywords = ["more care", "less care", "overall health", "all metrics", "comprehensive", "needs care", "need care"]
         q_lower = query.lower()

@@ -55,6 +55,7 @@ def ask(request: AskRequest):
 
     query = request.query
     session_id = request.session_id
+    chat_history = get_history(session_id)
 
     # Context dictionary for structured JSON logging
     log_ctx = {"trace_id": trace_id, "query": query, "session_id": session_id}
@@ -81,7 +82,7 @@ def ask(request: AskRequest):
 
     # 3. Main Execution: Pass to the Multi-Retriever Agent
     try:
-        response = route_query(rewritten_query)
+        response = route_query(rewritten_query, original_query=query, chat_history=chat_history)
     except Exception as e:
         logger.exception(f"Agent flow crashed: {e}", extra=log_ctx)
         return {"error": "Internal System Error", "trace_id": trace_id}

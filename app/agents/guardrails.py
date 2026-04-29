@@ -47,7 +47,21 @@ _DOMAIN_KEYWORDS = [
     "list", "show", "find", "check", "get", "tell", "monitor", "help",
     "care", "context", "question", "follow", "mean",
 ]
-_DOMAIN_KEYWORDS_RE = re.compile("|".join(re.escape(keyword) for keyword in _DOMAIN_KEYWORDS), re.IGNORECASE)
+_SHORT_GREETING_TERMS = ["hi", "hello", "hey", "help", "ankit", "i am"]
+
+
+def _term_pattern(term: str) -> str:
+    return rf"(?<!\w){re.escape(term)}(?!\w)"
+
+
+_DOMAIN_KEYWORDS_RE = re.compile(
+    "|".join(_term_pattern(keyword) for keyword in _DOMAIN_KEYWORDS),
+    re.IGNORECASE,
+)
+_SHORT_GREETING_RE = re.compile(
+    "|".join(_term_pattern(term) for term in _SHORT_GREETING_TERMS),
+    re.IGNORECASE,
+)
 _ACKNOWLEDGEMENT_WORDS = {
     "ok", "okay", "fine", "alright", "got it", "cool", "understood",
     "thanks", "thank you", "noted", "sure", "yep", "yes",
@@ -79,9 +93,7 @@ def input_guardrail(query: str) -> bool:
         logger.info("Query blocked by injection detection", extra={"query": query})
         return False
 
-    if len(query_lower.split()) <= 5 and any(
-        word in query_lower for word in ["hi", "hello", "hey", "help", "ankit", "i am"]
-    ):
+    if len(query_lower.split()) <= 5 and _SHORT_GREETING_RE.search(query_lower):
         return True
 
     if query_lower in _ACKNOWLEDGEMENT_WORDS:

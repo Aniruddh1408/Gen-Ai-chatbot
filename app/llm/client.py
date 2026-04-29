@@ -133,7 +133,7 @@ def ask_with_messages(
     system_prompt: str,
     user_prompt: str,
     response_format: str | None = None,
-    num_predict: int = 160,
+    num_predict: int = 100,
     temperature: float | None = None,
 ) -> str:
     """Call the vLLM OpenAI-compatible chat API and return assistant content."""
@@ -153,6 +153,16 @@ def ask_with_messages(
     return response.content.strip() if isinstance(response.content, str) else str(response.content).strip()
 
 
-def ask_llm(query: str, system_prompt: str = None) -> str:
+def ask_llm(
+    query: str,
+    system_prompt: str = None,
+    num_predict: int = 100,
+    temperature: float | None = None,
+) -> str:
     sys_prompt = system_prompt if system_prompt else get_system_prompt()
-    return ask_with_messages(sys_prompt, query)
+    return ask_with_messages(
+        sys_prompt,
+        query,
+        num_predict=num_predict,
+        temperature=temperature,
+    )
