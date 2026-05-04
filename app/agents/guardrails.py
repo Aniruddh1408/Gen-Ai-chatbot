@@ -5,6 +5,7 @@ Uses deterministic keyword and regex rules instead of an LLM for reliability.
 import re
 
 from app.core.logger import get_logger
+from app.retrievers.vector_retriever import has_relevant_documentation
 
 logger = get_logger("guardrails")
 
@@ -31,7 +32,10 @@ _DOMAIN_KEYWORDS = [
     "microcontroller", "esp32", "arduino", "raspberry", "node", "unit",
     "active", "offline", "online", "connected", "connection",
     "resident", "flat", "age", "medical", "history", "prescribed", "intake",
-    "medication", "doctor", "health", "report", "bp", "blood pressure",
+    "medication", "doctor", "clinical", "clinician", "nurse", "staff",
+    "escalate", "escalated", "escalation", "handoff", "support", "operator",
+    "policy", "procedure", "privacy", "security", "sensitive", "hipaa",
+    "health", "report", "bp", "blood pressure",
     "systolic", "diastolic", "sugar", "glucose", "steps", "sleep", "analytics",
     "quality", "duration", "patient", "score",
     "signal", "uptime", "cpu", "temperature", "moisture", "battery",
@@ -103,6 +107,10 @@ def input_guardrail(query: str) -> bool:
         return True
 
     if _DOMAIN_KEYWORDS_RE.search(query_lower):
+        return True
+
+    if has_relevant_documentation(query):
+        logger.info("Query allowed by documentation relevance", extra={"query": query})
         return True
 
     logger.info("Query blocked: no domain keywords detected", extra={"query": query})

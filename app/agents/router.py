@@ -9,7 +9,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from app.core.logger import get_logger
 from app.llm.client import ask_llm, llm
 from app.retrievers.sql_retriever import handle_sql
-from app.retrievers.vector_retriever import handle_rag
+from app.retrievers.vector_retriever import handle_rag, has_relevant_documentation
 
 logger = get_logger("router")
 
@@ -34,18 +34,21 @@ FORCE_RAG_WORDS = [
     "firmware", "ota", "wifi", "router", "gateway", "reset", "recalibrate",
     "calibration", "flashing", "blink", "blinking", "red light", "green light",
     "error code", "e-404", "sleep mode", "companion app",
+    "escalate", "escalated", "escalation", "clinical staff", "technical staff",
+    "privacy", "security", "policy", "procedure", "handoff",
 ]
 FORCE_SQL_WORDS = [
-    "resident", "residence", "age", "flat", "room", "bp", "sugar", "step", "sleep", "medical", "intake",
+    "resident", "residents", "patient", "patients", "residence", "age", "flat", "room", "bp", "sugar", "step", "sleep", "medical", "intake",
     "metric", "report", "analysis", "score", "glucose", "systolic", "diastolic",
     "low", "high", "avg", "average", "sum", "count", "history", "record",
     "older", "younger", "oldest", "youngest",
-    "care", "who is", "condition", "overall", "health", "signal", "uptime",
+    "who is", "signal", "uptime",
     "cpu", "temperature", "humidity", "pressure", "voltage", "current",
     "power", "energy", "device status",
 ]
 FORCE_SQL_PHRASES = [
     "more than", "less than", "higher than", "lower than",
+    "more care", "less care", "needs care", "need care", "overall health",
 ]
 FORCE_CHAT_EXACT = {"hi", "hello", "hey", "help", "thanks", "thank you", "bye"}
 FORCE_CHAT_PHRASES = ["what are you", "previous chat", "chat history", "greet yourself"]
@@ -71,12 +74,13 @@ GREETING_RESPONSES = {
 _NAME_LOOKUP_RE = re.compile(r"\b[a-z]+(?:\s+[a-z]+){1,2}\b")
 
 _GENERIC_EXPLANATION_SQL_BLOCKERS = [
-    "resident", "patient", "age", "flat", "room", "history", "intake",
+    "resident", "residents", "patient", "patients", "age", "flat", "room", "history", "intake",
     "report", "metric", "average", "avg", "count", "sum", "highest", "lowest",
     "best", "worst", "most", "least", "top", "bottom", "chart", "graph",
     "compare", "comparison", "details", "detail", "record", "records",
     "more than", "less than", "higher than", "lower than",
 ]
+_DOC_ROUTING_DISTANCE = 0.93
 
 
 def _looks_like_resident_lookup(query: str) -> bool:
@@ -102,6 +106,15 @@ def _looks_like_generic_explanatory_query(query: str) -> bool:
     return True
 
 
+def _looks_like_clear_sql_query(query: str) -> bool:
+    q = query.lower().strip()
+    if any(phrase in q for phrase in FORCE_SQL_PHRASES):
+        return True
+    if _looks_like_resident_lookup(q):
+        return True
+    return any(_contains_term(q, word) for word in FORCE_SQL_WORDS)
+
+
 def _format_chat_history(chat_history: list[dict] | None, limit: int = 3) -> str:
     if not chat_history:
         return ""
@@ -125,8 +138,11 @@ def classify_intent(query: str) -> str:
     if any(_contains_term(q, word) for word in FORCE_RAG_WORDS):
         return "RAG"
 
-    if any(_contains_term(q, word) for word in FORCE_SQL_WORDS) or any(phrase in q for phrase in FORCE_SQL_PHRASES) or _looks_like_resident_lookup(q):
+    if _looks_like_clear_sql_query(q):
         return "SQL"
+
+    if has_relevant_documentation(query, max_distance=_DOC_ROUTING_DISTANCE):
+        return "RAG"
 
     if any(q.startswith(prefix) for prefix in FORCE_CHAT_PREFIXES):
         return "CHAT"
