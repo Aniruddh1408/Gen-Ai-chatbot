@@ -10,17 +10,17 @@ from app.llm.client import ask_llm
 
 logger = get_logger("vector_retriever")
 
-OLLAMA_EMBED_URL = f"{EMBED_BASE_URL}/api/embeddings"
+LLAMA_EMBED_URL = f"{EMBED_BASE_URL}/api/embeddings"
 _HTTP_SESSION = requests.Session()
 _HTTP_SESSION.trust_env = False
-_MAX_RAG_DISTANCE = 0.82
+_MAX_RAG_DISTANCE = 0.75       # Tuned threshold for pgvector distance to consider a match relevant.
 
 
 def get_embedding(text: str) -> list[float] | None:
-    """Get embedding vector from Ollama's embedding model."""
+    """Get embedding vector from LLAMA's embedding model."""
     try:
         res = _HTTP_SESSION.post(
-            OLLAMA_EMBED_URL,
+            LLAMA_EMBED_URL,
             json={"model": EMBED_MODEL, "prompt": text},
             timeout=30,
         )
@@ -65,14 +65,16 @@ def handle_rag(query: str) -> dict:
     embed_str = "[" + ",".join(map(str, query_embed)) + "]"
 
     search_sql = """
-    SELECT content, embedding <-> %s::vector AS distance
+    SELECT content, source_title, source_path, embedding <-> %s::vector AS distance
     FROM documents
+    WHERE is_active = TRUE
+      AND embedding_model = %s
     ORDER BY distance
     LIMIT 3;
     """
 
     try:
-        results = run_query(search_sql, (embed_str,))
+        results = run_query(search_sql, (embed_str, EMBED_MODEL))
         if not results:
             return {
                 "query": query,
@@ -80,7 +82,7 @@ def handle_rag(query: str) -> dict:
                 "answer": "I couldn't find that in the documentation.",
             }
 
-        top_distance = float(results[0][1])
+        top_distance = float(results[0][3])
         if top_distance > _MAX_RAG_DISTANCE:
             logger.info(f"RAG match rejected by distance threshold: {top_distance:.3f}")
             return {
@@ -89,8 +91,11 @@ def handle_rag(query: str) -> dict:
                 "answer": "I couldn't find that in the documentation.",
             }
 
-        filtered_results = [row for row in results if float(row[1]) <= (_MAX_RAG_DISTANCE + 0.08)]
-        context = "\n---\n".join([row[0] for row in filtered_results])
+        filtered_results = [row for row in results if float(row[3]) <= (_MAX_RAG_DISTANCE + 0.08)]
+        context = "\n---\n".join(
+            f"Source: {row[1] or row[2]}\n{row[0]}"
+            for row in filtered_results
+        )
 
     except Exception as exc:
         logger.error(f"RAG vector search failed: {exc}")

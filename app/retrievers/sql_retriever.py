@@ -53,8 +53,10 @@ _METRIC_RANKING_RULES = [
         "label": "sleep score",
         "patterns": [
             r"\bsleep score\b",
+            r"\bsleep scores\b",
             r"\bsleep quality\b",
             r"\bsleep quality score\b",
+            r"\bsleep quality scores\b",
         ],
     },
     {
@@ -78,6 +80,7 @@ _METRIC_RANKING_RULES = [
         "patterns": [
             r"\bsteps\b",
             r"\bstep count\b",
+            r"\bstep counts\b",
             r"\bwalking\b",
         ],
     },
@@ -90,6 +93,10 @@ _METRIC_RANKING_RULES = [
         "patterns": [
             r"\bsugar\b",
             r"\bglucose\b",
+            r"\bsugar level\b",
+            r"\bsugar levels\b",
+            r"\bglucose level\b",
+            r"\bglucose levels\b",
         ],
     },
     {
@@ -101,6 +108,7 @@ _METRIC_RANKING_RULES = [
         "patterns": [
             r"\bbp\b",
             r"\bblood pressure\b",
+            r"\bblood pressures\b",
             r"\bsystolic\b",
         ],
     },
@@ -119,7 +127,34 @@ _DESC_RANKING_PATTERNS = [
     r"\bhighest\b",
     r"\bmost\b",
     r"\btop\b",
+    r"\brunner[-\s]?up\b",
 ]
+
+_ORDINAL_WORDS = {
+    "first": 1,
+    "second": 2,
+    "third": 3,
+    "fourth": 4,
+    "fifth": 5,
+    "sixth": 6,
+    "seventh": 7,
+    "eighth": 8,
+    "ninth": 9,
+    "tenth": 10,
+}
+
+_NUMBER_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+}
 
 
 def _extract_resident_name(query: str) -> str | None:
@@ -190,6 +225,81 @@ def _format_resident_profile_answer(profile_field: str, result: list[tuple]) -> 
     return None
 
 
+def _ordinal_label(position: int) -> str:
+    labels = {
+        1: "1st",
+        2: "2nd",
+        3: "3rd",
+    }
+    if position in labels:
+        return labels[position]
+    return f"{position}th"
+
+
+def _parse_ranking_window(query: str, order_direction: str) -> dict:
+    q_lower = query.lower()
+
+    ordinal_match = re.search(r"\b(\d+)(?:st|nd|rd|th)\b", q_lower)
+    if ordinal_match:
+        position = int(ordinal_match.group(1))
+        return {
+            "limit": 1,
+            "offset": max(position - 1, 0),
+            "rank_position": position,
+            "is_rank_list": False,
+        }
+
+    if re.search(r"\brunner[-\s]?up\b", q_lower):
+        return {
+            "limit": 1,
+            "offset": 1,
+            "rank_position": 2,
+            "is_rank_list": False,
+        }
+
+    for word, position in _ORDINAL_WORDS.items():
+        if re.search(rf"\b{word}\b", q_lower):
+            return {
+                "limit": 1,
+                "offset": max(position - 1, 0),
+                "rank_position": position,
+                "is_rank_list": False,
+            }
+
+    list_count = None
+    if order_direction == "DESC":
+        list_match = re.search(r"\b(?:top|best|highest|most)\s+(\d+)\b", q_lower)
+    else:
+        list_match = re.search(r"\b(?:bottom|worst|lowest|least|fewest)\s+(\d+)\b", q_lower)
+
+    if list_match:
+        list_count = int(list_match.group(1))
+    else:
+        list_word_match = None
+        if order_direction == "DESC":
+            list_word_match = re.search(r"\b(?:top|best|highest|most)\s+([a-z]+)\b", q_lower)
+        else:
+            list_word_match = re.search(r"\b(?:bottom|worst|lowest|least|fewest)\s+([a-z]+)\b", q_lower)
+        if list_word_match:
+            list_count = _NUMBER_WORDS.get(list_word_match.group(1))
+
+    if list_count:
+        limit = max(list_count, 1)
+        return {
+            "limit": limit,
+            "offset": 0,
+            "rank_position": None,
+            "is_rank_list": limit > 1,
+        }
+
+    return {
+        "limit": 1,
+        "offset": 0,
+        "rank_position": 1,
+        "is_rank_list": False,
+    }
+
+
 def _detect_metric_ranking_plan(query: str) -> dict | None:
     q_lower = query.lower()
 
@@ -204,15 +314,19 @@ def _detect_metric_ranking_plan(query: str) -> dict | None:
 
     for rule in _METRIC_RANKING_RULES:
         if any(re.search(pattern, q_lower) for pattern in rule["patterns"]):
+            ranking_window = _parse_ranking_window(query, order_direction)
             return {
                 "table": rule["table"],
                 "column": rule["column"],
                 "filters": [],
                 "order_by": rule["order_by"],
                 "order_direction": order_direction,
-                "limit": 1,
+                "limit": ranking_window["limit"],
+                "offset": ranking_window["offset"],
                 "_metric_name": rule["name"],
                 "_metric_label": rule["label"],
+                "_rank_position": ranking_window["rank_position"],
+                "_is_rank_list": ranking_window["is_rank_list"],
             }
     return None
 
@@ -221,28 +335,52 @@ def _format_metric_ranking_answer(query: str, plan: dict, result: list[tuple]) -
     if not result:
         return None
 
-    row = result[0]
-    if len(row) < 2:
-        return None
-
-    resident_name = str(row[0]).strip()
-    metric_value = row[1]
     metric_label = plan.get("_metric_label", "metric")
     q_lower = query.lower()
 
-    if plan.get("_metric_name") == "bp_systolic":
-        metric_text = f"{metric_value} mmHg"
-    elif plan.get("_metric_name") == "sleep_duration_minutes":
-        metric_text = f"{metric_value} minutes"
-    else:
-        metric_text = str(metric_value)
+    def format_metric_value(value) -> str:
+        if plan.get("_metric_name") == "bp_systolic":
+            return f"{value} mmHg"
+        if plan.get("_metric_name") == "sleep_duration_minutes":
+            return f"{value} minutes"
+        return str(value)
 
     if any(re.search(pattern, q_lower) for pattern in _ASC_RANKING_PATTERNS):
         qualifier = "worst" if "sleep" in metric_label else "lowest"
     else:
         qualifier = "best" if "sleep" in metric_label else "highest"
 
+    if plan.get("_is_rank_list"):
+        lines = []
+        start_position = int(plan.get("offset", 0)) + 1
+        for idx, row in enumerate(result, start=start_position):
+            if len(row) < 2:
+                continue
+            resident_name = str(row[0]).strip()
+            lines.append(f"{_ordinal_label(idx)}: {resident_name} - {format_metric_value(row[1])}")
+        if not lines:
+            return None
+        return f"The {qualifier} {metric_label} rankings are:\n" + "\n".join(lines)
+
+    row = result[0]
+    if len(row) < 2:
+        return None
+
+    resident_name = str(row[0]).strip()
+    metric_text = format_metric_value(row[1])
+    rank_position = plan.get("_rank_position") or (int(plan.get("offset", 0)) + 1)
+    if rank_position and int(rank_position) > 1:
+        qualifier = f"{_ordinal_label(int(rank_position))} {qualifier}"
+
     return f"The resident with the {qualifier} {metric_label} is {resident_name}, with {metric_label} {metric_text}."
+
+
+def _format_empty_metric_ranking_answer(plan: dict) -> str:
+    metric_label = plan.get("_metric_label", "metric")
+    rank_position = plan.get("_rank_position")
+    if rank_position:
+        return f"I couldn't find a {_ordinal_label(int(rank_position))} ranked resident for {metric_label}."
+    return f"I couldn't find matching {metric_label} records."
 
 def build_sql(plan: dict) -> tuple[str, list]:
     table = plan.get("table", "residents")
@@ -258,6 +396,7 @@ def build_sql(plan: dict) -> tuple[str, list]:
     order_dir = "DESC" if "DESC" in raw_dir else "ASC"
     
     limit = plan.get("limit", 10)
+    offset = plan.get("offset", 0)
     
     # Handle auto-join for resident names
     from_clause = table
@@ -309,12 +448,19 @@ def build_sql(plan: dict) -> tuple[str, list]:
         limit = int(limit)
     except (ValueError, TypeError):
         limit = 10
+    try:
+        offset = int(offset)
+    except (ValueError, TypeError):
+        offset = 0
+    offset = max(offset, 0)
 
     if conditions:
         sql += " WHERE " + " AND ".join(conditions)
     if order_by:
-        sql += f" ORDER BY {order_by} {order_dir}"
+        sql += f" ORDER BY {order_by} {order_dir}, residents.name ASC"
     sql += f" LIMIT {limit}"
+    if offset:
+        sql += f" OFFSET {offset}"
     
     return sql, params
 
@@ -373,7 +519,7 @@ def handle_sql(query: str) -> dict:
                     "plan": direct_metric_plan,
                     "sql": sql,
                     "result": result,
-                    "answer": f"I couldn't find matching records for '{query}'.",
+                    "answer": _format_empty_metric_ranking_answer(direct_metric_plan),
                 }
 
             answer = _format_metric_ranking_answer(query, direct_metric_plan, result) or ask_llm(
