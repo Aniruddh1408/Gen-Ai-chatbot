@@ -295,6 +295,41 @@
             font-weight: 700;
         }
 
+        .community-control {
+            display: grid;
+            gap: 6px;
+            min-width: 230px;
+            padding: 10px 12px;
+            border-radius: 18px;
+            border: 1px solid rgba(103, 214, 255, 0.18);
+            background: rgba(103, 214, 255, 0.08);
+        }
+
+        .community-control span {
+            color: var(--text-muted);
+            font-size: 0.68rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .community-select {
+            width: 100%;
+            border: 1px solid rgba(157, 191, 255, 0.16);
+            background: rgba(5, 16, 30, 0.84);
+            color: var(--text-main);
+            border-radius: 12px;
+            padding: 9px 12px;
+            font-family: inherit;
+            font-size: 0.84rem;
+            cursor: pointer;
+        }
+
+        .community-select:focus {
+            border-color: rgba(103, 214, 255, 0.44);
+            box-shadow: 0 0 0 3px rgba(103, 214, 255, 0.1);
+            outline: none;
+        }
+
         .prompt-picker {
             display: grid;
             grid-template-columns: minmax(0, 1fr) auto;
@@ -750,6 +785,14 @@
                     <p>Ask naturally, inspect results clearly, and surface charts inline without leaving the conversation.</p>
                 </div>
                 <div class="status-cluster">
+                    <label class="community-control" for="community-select">
+                        <span>Local Community</span>
+                        <select id="community-select" class="community-select">
+                            <option value="1">Green Valley Care</option>
+                            <option value="2">Sunrise Senior Living</option>
+                            <option value="3">Lotus Wellness Home</option>
+                        </select>
+                    </label>
                     <div class="status-pill"><strong>DB</strong> Connected</div>
                     <div class="status-pill"><strong>UX</strong> Real-time</div>
                     <div class="status-pill"><strong>Session</strong> <span id="session-indicator">Live</span></div>
@@ -816,11 +859,33 @@
         const sessionIndicator = document.getElementById("session-indicator");
         const sessionIdText = document.getElementById("session-id-text");
         const promptSelect = document.getElementById("prompt-select");
+        const communitySelect = document.getElementById("community-select");
+
+        const communityNames = {
+            1: "Green Valley Care",
+            2: "Sunrise Senior Living",
+            3: "Lotus Wellness Home"
+        };
+
+        function getStoredCommunityId() {
+            const storedCommunityId = Number(localStorage.getItem("kubo_community_id") || "1");
+            return communityNames[storedCommunityId] ? storedCommunityId : 1;
+        }
 
         let sessionId = localStorage.getItem("kubo_session_id") || "session_" + Date.now();
         localStorage.setItem("kubo_session_id", sessionId);
+        const communityId = getStoredCommunityId();
+        localStorage.setItem("kubo_community_id", String(communityId));
         sessionIndicator.textContent = sessionId.slice(-6).toUpperCase();
         sessionIdText.textContent = sessionId.slice(-8);
+
+        if (communitySelect) {
+            communitySelect.value = String(communityId);
+            communitySelect.addEventListener("change", () => {
+                localStorage.setItem("kubo_community_id", communitySelect.value);
+                location.reload();
+            });
+        }
 
         let currentAbortController = null;
 
@@ -980,7 +1045,7 @@
                 const response = await fetch("/ask", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ query, session_id: sessionId }),
+                    body: JSON.stringify({ query, session_id: sessionId, community_id: communityId }),
                     signal: currentAbortController.signal
                 });
 

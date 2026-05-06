@@ -15,7 +15,7 @@ DB_HOST = os.getenv("DB_HOST")
 DB_PORT = os.getenv("DB_PORT")
 
 # --- Generation LLM (vLLM / OpenAI-compatible) ---
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://10.0.130.10:8000/v1")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://10.0.130.10:8001/v1")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "dummy")
 LLM_MODEL = os.getenv("LLM_MODEL", "Qwen/Qwen2.5-7B-Instruct-AWQ")
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", 0.0))

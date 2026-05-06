@@ -1,6 +1,8 @@
 """
 Vector (RAG) Retriever - Semantic search via pgvector + LangChain answer chain.
 """
+from pathlib import Path
+
 import requests
 
 from app.core.config import EMBED_BASE_URL, EMBED_MODEL
@@ -15,6 +17,7 @@ _HTTP_SESSION = requests.Session()
 _HTTP_SESSION.trust_env = False
 _MAX_RAG_DISTANCE = 0.91
 _DOC_GUARDRAIL_DISTANCE = 0.93
+_DOCS_DIR = Path("data/docs")
 
 
 def get_embedding(text: str) -> list[float] | None:
@@ -91,9 +94,113 @@ Formatting rules:
 - Do not produce long dense paragraphs unless the user explicitly asks for detail.
 """
 
+_SECTION_PATTERNS = [
+    (["e-404", "error code"], ["Error Code E-404"]),
+    (["blinking red", "red light", "flashing red"], ["Rapid Blinking Red Light"]),
+    (["sleep mode", "green light"], ["Sleep Mode Indicator"]),
+    (["temperature", "overheating", "protection mode"], ["Temperature Protection Mode"]),
+    (["moisture", "recalibrat", "calibration"], ["Moisture Sensor Recalibration"]),
+    (["maintenance"], ["General Maintenance"]),
+    (["technical staff", "technical escalation"], ["When To Escalate To Technical Staff"]),
+    (["clinical staff", "clinical escalation"], ["When To Escalate To Clinical Staff", "Clinical Escalation Boundaries"]),
+    (["privacy", "security"], ["Privacy And Security"]),
+    (["documentation versus database", "source of truth"], ["Documentation Versus Database"]),
+]
+
+
+def _extract_markdown_section(context: str, headings: list[str]) -> str | None:
+    lines = context.splitlines()
+    heading_indexes: list[int] = []
+
+    for index, line in enumerate(lines):
+        normalized = line.strip().lstrip("#").strip().lower()
+        if any(heading.lower() == normalized for heading in headings):
+            heading_indexes.append(index)
+
+    if not heading_indexes:
+        return None
+
+    start = heading_indexes[0]
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        stripped = lines[index].strip()
+        if stripped == "---" or stripped.startswith("## "):
+            end = index
+            break
+
+    section_lines = [
+        line.strip()
+        for line in lines[start:end]
+        if line.strip() and not line.strip().startswith("Source:")
+    ]
+    if not section_lines:
+        return None
+
+    if section_lines[0].startswith("## "):
+        section_lines[0] = section_lines[0].lstrip("#").strip()
+
+    return "\n".join(section_lines[:28])
+
+
+def _load_section_from_local_docs(headings: list[str]) -> str | None:
+    if not _DOCS_DIR.exists():
+        return None
+
+    for path in sorted(_DOCS_DIR.glob("*.md")):
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        section = _extract_markdown_section(content, headings)
+        if section:
+            return section
+
+    return None
+
+
+def _section_document_answer(query: str, context: str) -> str | None:
+    q_lower = query.lower()
+    for triggers, headings in _SECTION_PATTERNS:
+        if any(trigger in q_lower for trigger in triggers):
+            section = _load_section_from_local_docs(headings) or _extract_markdown_section(context, headings)
+            if section:
+                return section
+    return None
+
+
+def _fallback_document_answer(query: str, context: str) -> str:
+    section_answer = _section_document_answer(query, context)
+    if section_answer:
+        return section_answer
+
+    compact_lines = []
+    for line in context.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("Source:"):
+            continue
+        if stripped.startswith("# "):
+            continue
+        compact_lines.append(stripped.lstrip("#").strip())
+        if len(compact_lines) >= 12:
+            break
+
+    if compact_lines:
+        return "\n".join(compact_lines)
+
+    return _NOT_FOUND_ANSWER
+
 
 def handle_rag(query: str) -> dict:
     """Full RAG pipeline: embed query -> pgvector search -> LLM answer."""
+    local_answer = _section_document_answer(query, "")
+    if local_answer:
+        return {
+            "query": query,
+            "retrieved_context": "local documentation section",
+            "answer": local_answer,
+        }
+
     query_embed = get_embedding(query)
     if not query_embed:
         return {
@@ -136,6 +243,13 @@ def handle_rag(query: str) -> dict:
             f"Source: {row[1] or row[2]}\n{row[0]}"
             for row in filtered_results
         )
+        section_answer = _section_document_answer(query, context)
+        if section_answer:
+            return {
+                "query": query,
+                "retrieved_context": context,
+                "answer": section_answer,
+            }
 
     except Exception as exc:
         logger.error(f"RAG vector search failed: {exc}")
@@ -153,11 +267,11 @@ def handle_rag(query: str) -> dict:
         )
     except Exception as exc:
         logger.error(f"RAG answer generation failed: {exc}")
+        fallback_answer = _fallback_document_answer(query, context)
         return {
             "query": query,
             "retrieved_context": context,
-            "error": str(exc),
-            "answer": "I found relevant documentation, but the local language model took too long to generate the final response.",
+            "answer": fallback_answer,
         }
 
     legacy_not_found_phrases = [

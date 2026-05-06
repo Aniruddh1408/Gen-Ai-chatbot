@@ -1,4 +1,11 @@
 SCHEMA = {
+    "communities": {
+        "columns": {
+            "id": "integer",
+            "name": "text",
+            "code": "text"
+        }
+    },
     "device_status": {
         "columns": {
             "board_id": "text",
@@ -12,6 +19,7 @@ SCHEMA = {
     "residents": {
         "columns": {
             "id": "integer",
+            "community_id": "integer",
             "name": "text",
             "flat_no": "text",
             "age": "integer",
@@ -55,6 +63,7 @@ def schema_to_text(schema):
 
     # Important for JOINs
     text += "\nRelationships:\n"
+    text += "- communities.id = residents.community_id\n"
     text += "- residents.id = health_reports.resident_id\n"
     text += "- residents.id = activity_metrics.resident_id\n"
     text += "- residents.id = sleep_analytics.resident_id\n"

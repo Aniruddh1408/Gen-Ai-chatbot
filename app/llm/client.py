@@ -46,6 +46,7 @@ JSON FORMAT RULES:
 2. column: ALWAYS select "residents.name" along with the metric you need (e.g., "residents.name, steps_count"). Never use "*".
 3. filters: List of column, operator, value. NEVER create time or date filters (assume all DB data is recent).
 4. order_by: Column name if user asks for highest, lowest, best, worst.
+5. Never create community_id filters. The backend applies community scope automatically.
 
 EXAMPLE 1 (Chart or Analytics):
 Query: Make a chart of the sleep quality scores.
@@ -100,6 +101,7 @@ Rules:
 - For resident metric queries, include residents.name in column.
 - Never use '*'.
 - filters must be a list of objects like {"column":"residents.name","operator":"=","value":"Ravi Kumar"}.
+- Never include community_id in filters. The backend applies community scope automatically.
 - If user asks for lowest/least/fewest, use order_direction ASC and limit 1.
 - If user asks for highest/most/best, use order_direction DESC and limit 1.
 - If no filters are needed, return "filters": [].
