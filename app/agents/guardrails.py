@@ -27,7 +27,7 @@ _INJECTION_PATTERNS = [
 _INJECTION_RE = re.compile("|".join(_INJECTION_PATTERNS), re.IGNORECASE)
 
 _DOMAIN_KEYWORDS = [
-    "device", "devices", "sensor", "board", "boards", "telemetry", "dev1", "dev2", "dev3", "dev4", "dev5",
+    "device", "sensor", "board", "dev1", "dev2", "dev3", "dev4", "dev5",
     "iot", "hardware", "firmware", "ota", "wifi", "router", "gateway",
     "microcontroller", "esp32", "arduino", "raspberry", "node", "unit",
     "active", "offline", "online", "connected", "connection",
@@ -36,15 +36,15 @@ _DOMAIN_KEYWORDS = [
     "doctor", "clinical", "clinician", "nurse", "staff",
     "escalate", "escalated", "escalation", "handoff", "support", "operator",
     "policy", "procedure", "privacy", "security", "sensitive", "hipaa",
-    "health", "healthy", "healthiest", "unhealthy", "unhealthiest", "stable", "unstable",
+    "health", "healthier", "healthy", "healthiest", "unhealthy", "unhealthier", "unhealthiest", "stable", "unstable",
     "report", "bp", "blood pressure",
-    "systolic", "diastolic", "sugar", "glucose", "steps", "sleep", "slept", "analytics",
+    "systolic", "diastolic", "sugar", "glucose", "steps", "sleep", "analytics",
     "quality", "duration", "patient", "score", "scores", "vital", "vitals",
     "critical", "attention", "risk", "priority", "prioritize",
     "signal", "uptime", "cpu", "temperature", "moisture", "battery",
     "humidity", "pressure", "voltage", "current", "power", "energy",
     "average", "avg", "sum", "count", "max", "min", "total", "mean",
-    "peak", "lowest", "highest", "longest", "shortest", "last", "latest", "historical",
+    "peak", "lowest", "highest", "last", "latest", "historical",
     "location", "zone", "floor", "building", "area", "site", "warehouse",
     "flashing", "error", "reset", "recalibrate", "calibrat", "blink",
     "sleep mode", "e-404", "red light", "green light", "trouble", "broken",
