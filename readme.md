@@ -1,223 +1,329 @@
-# GenAI IoT Assistant — Full Project Analysis & Recommendations
+# KuboCare GenAI Assistant
 
-#uvicorn app.api.main:app --reload
+KuboCare GenAI Assistant is a FastAPI chatbot backend for community-scoped resident health analytics and IoT support documentation.
 
-## Current Architecture
+The project uses a hybrid retrieval design:
 
-```mermaid
-graph TD
-    A[POST /ask] --> B[input_guardrail]
-    B -->|BLOCKED| C[Return Error]
-    B -->|ALLOWED| D[route_query]
-    D --> E{classify_intent}
-    E -->|SQL| F[handle_sql]
-    E -->|RAG| G[handle_rag]
-    F -->|error/empty| G
-    F -->|success| H[output_guardrail]
-    G --> H
-    H --> I[Return Response]
+- Structured resident and metric questions are answered from PostgreSQL using deterministic SQL retrieval.
+- Device telemetry questions are answered from the `device_status` table.
+- Documentation and troubleshooting questions are answered through RAG over the local documentation set.
+- Follow-up questions use session memory so prompts like `what is her BP?` can resolve to the correct resident.
+
+## Current Flow
+
+```text
+POST /ask
+  -> community_id validation
+  -> community-scoped session memory
+  -> query rewrite for follow-ups
+  -> input guardrail
+  -> intent router
+      -> SQL retriever for residents, health_reports, activity_metrics, sleep_analytics, device_status
+      -> RAG retriever for docs/manuals/privacy/escalation/troubleshooting
+      -> chat response for greetings/basic chat
+  -> output guardrail
+  -> save turn in memory
+  -> response with trace_id, latency, community_id, community_name
 ```
 
-**Stack:**
-| Component | Technology |
-|-----------|-----------|
+## Why Community ID Matters
+
+The chatbot is meant to run inside an existing dashboard where the user is already logged into one community. The user should not need to type the community name.
+
+The dashboard must send the logged-in community ID to `/ask`:
+
+```json
+{
+  "query": "Who needs more care?",
+  "session_id": "caretaker-123",
+  "community_id": 3
+}
+```
+
+The backend then automatically filters resident data to that community. A caretaker from community 3 cannot retrieve residents from community 1 or 2 through normal resident queries.
+
+## Main Capabilities
+
+Resident data:
+
+- List residents in the current community
+- Count residents
+- Fetch resident details by ID or name
+- Retrieve age, flat/room, medical history, and prescribed medication
+
+Health metrics:
+
+- Blood pressure readings and rankings
+- Sugar/glucose levels and rankings
+- Step counts and rankings
+- Sleep duration and sleep score rankings
+- Average BP, sugar, steps, sleep duration, and sleep score
+
+Care prioritization:
+
+- `Who needs more care?`
+- `Give only one resident who requires more care.`
+- `Who is most healthy?`
+- `Who is not healthy?`
+
+The care answer is a data-prioritization heuristic using age, BP, sugar, sleep, steps, and medical history. It is not a medical diagnosis.
+
+Device status:
+
+- List devices
+- Show a specific board status such as `DEV4`
+- Weakest/strongest signal
+- Lowest/highest uptime
+- Highest CPU usage
+- Average device uptime/signal/CPU
+
+RAG documentation:
+
+- Error code explanations
+- Device troubleshooting
+- Privacy and security policy
+- Clinical and technical escalation guidance
+
+## Tech Stack
+
+| Area | Technology |
+| --- | --- |
 | API | FastAPI |
-| LLM | Ollama (`qwen2:1.5b`) locally |
-| Embeddings | Ollama (`mxbai-embed-large`) |
-| DB | PostgreSQL + pgvector |
-| Text-to-SQL | Custom planner (JSON plan → safe SQL builder) |
-| Vector RAG | pgvector cosine search |
-| Memory | ❌ Removed (was a query rewriter) |
-| Guardrails | Simple LLM call (input) + heuristic string match (output) |
+| Database | PostgreSQL |
+| Vector search | pgvector |
+| LLM client | OpenAI-compatible vLLM endpoint through LangChain `ChatOpenAI` |
+| Embeddings | Ollama embeddings API |
+| Memory | Redis with in-memory fallback |
+| Routing | Deterministic rules plus LangChain classifier fallback |
+| Frontend | Static HTML served by FastAPI |
 
----
+LangChain is used for LLM client calls, prompt templates, and lightweight routing support.
 
-## 🔴 Issue 1: SQL Converter Getting Wrong Answers
+## Project Structure
 
-### Root Cause Analysis
+```text
+app/
+  agents/
+    guardrails.py       Input/output safety rules
+    memory.py           Redis-backed chat history and follow-up rewriting
+    router.py           Intent routing to SQL, RAG, or chat
+  api/
+    main.py             FastAPI app and endpoints
+  core/
+    config.py           Environment configuration
+    db.py               PostgreSQL connection pool
+    logger.py           JSON logging
+  frontend/
+    index.html          Local demo UI
+  llm/
+    client.py           vLLM/OpenAI-compatible LLM client
+  retrievers/
+    sql_retriever.py    Deterministic SQL/data retrieval
+    vector_retriever.py RAG retrieval over docs
+  schema/
+    schema.py           Table schema used by SQL planning
 
-The SQL pipeline has **4 compounding weak points**:
+data/
+  rag_db.sql            Database schema and seed data
+  docs/                 RAG documentation markdown files
 
-### (a) Weak Schema Injection in `generate_plan()`
-
-```python
-# sql_retriever.py L13-27
-# schema_to_text() only sends column NAMES, NOT types!
-# Output: "Table: device_status | Columns: board_id, location, signal..."
+scripts/
+  embed_docs.py         Loads docs into pgvector-backed document tables
 ```
 
-The LLM never sees column types (`TEXT`, `FLOAT`, `TIMESTAMP`), so it guesses
-filter values incorrectly (e.g., wrapping a float in quotes, wrong date format).
+## Environment Variables
 
-**Fix:** Send full typed schema like `board_id TEXT, signal FLOAT, time TIMESTAMP`.
+Create a `.env` file in the project root.
 
-### (b) System Prompt and User Prompt Are FIGHTING Each Other
+```env
+DB_NAME=your_database
+DB_USER=your_user
+DB_PASS=your_password
+DB_HOST=localhost
+DB_PORT=5432
 
-```python
-# llm/client.py L70
-def ask_llm(query, system_prompt=None):
-    sys_prompt = system_prompt if system_prompt else get_system_prompt()
+LLM_BASE_URL=http://your-vllm-host:8001/v1
+LLM_API_KEY=dummy
+LLM_MODEL=Qwen/Qwen2.5-7B-Instruct-AWQ
+LLM_TEMPERATURE=0
+LLM_TIMEOUT_SECONDS=0
+
+EMBED_BASE_URL=http://localhost:11434
+EMBED_MODEL=mxbai-embed-large
+
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_DB=0
+
+DB_POOL_MIN=1
+DB_POOL_MAX=10
 ```
 
-`generate_plan()` passes **no system_prompt**, so the default `get_system_prompt()` fires.
-BUT `generate_plan()` ALSO injects its own schema + rules into the **user message** (the `prompt` variable in L13-27).
+Notes:
 
-Result: The LLM receives **two conflicting sets of rules and two schemas** — one in system role, one in user role. The `qwen2:1.5b` model (very small, 1.5B params) gets confused and produces inconsistent plans.
+- `community_id` is required for `/ask`.
+- Redis is recommended for real sessions. If Redis is unavailable, the app falls back to in-memory history for local testing.
+- The RAG retriever can answer known local documentation sections even if embeddings are unavailable, but full vector search requires Ollama embeddings and pgvector documents.
 
-**Fix:** Pass the full SQL system prompt from `generate_plan()` directly as the `system_prompt` arg, with only the raw user query in the user message.
+## Setup
 
-### (c) `build_sql()` Drops Columns When `group_by` Is Set
+1. Create and activate a virtual environment:
 
-```python
-# sql_retriever.py L149-157
-if group_by:
-    selections.append(group_by)   # ✅ adds group_by col
-if agg:
-    selections.append(f"{agg.upper()}({col}) as result")  # ✅ adds aggregation
-else:
-    if not group_by:               # ❌ BUG: if group_by is set, the target col is NEVER added!
-        selections.append(col)
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
 ```
 
-**Example:** Query `"avg signal by location"` → `SELECT location, AVG(signal) as result` ✅
-Query `"signal and cpu by location"` with no agg → `SELECT location` ❌ (cpu and signal are dropped!)
+2. Install dependencies:
 
-**Fix:**
-
-```python
-else:
-    selections.append(col)  # Always add the target column, regardless of group_by
+```powershell
+pip install -r requirements.txt
 ```
 
-### (d) `qwen2:1.5b` Is Too Small for Reliable Text-to-SQL
+3. Create the PostgreSQL database and load the schema/data:
 
-A 1.5B model struggles with multi-condition SQL generation, date arithmetic, and respecting JSON-only output constraints. It hallucinates extra fields, natural language inside JSON, and wrong operator strings.
-
-**Fix options (pick one):**
-
-- Switch to `qwen2.5-coder:7b` or `llama3.1:8b` locally (better JSON discipline)
-- Use LangChain's `create_sql_agent` which has battle-tested prompting for this exact task
-
----
-
-## 🔴 Issue 2: Memory Was Misbehaving
-
-### Why It Broke
-
-The `memory.py` design is fundamentally correct — it's a **query rewriter** pattern, which is the right approach. The problem is in how it was integrated (or not integrated) into `main.py`:
-
-- `main.py` **never calls `rewrite_query_with_memory()`** — memory was never wired in.
-- The API endpoint takes `query: str` directly, with **no session_id**, so there's no way to track which user's history to retrieve.
-- There was no storage backend — history was never persisted (would reset every call).
-
-**Fix with LangChain:**
-`ConversationBufferWindowMemory` + `RunnableWithMessageHistory` gives you:
-
-- Automatic session tracking by `session_id`
-- Sliding window (last N turns) to prevent token overflow
-- Clean injection into the prompt chain
-
----
-
-## 🔴 Issue 3: Guardrails Are Too Fragile
-
-### Problems
-
-**Input guardrail:**
-
-- Makes a full LLM call (wasting ~300ms) for a simple intent check on a tiny 1.5B model.
-- `qwen2:1.5b` often returns `"ALLOWED"` with extra words like `"ALLOWED - This is a valid IoT query"` — the current code's `"BLOCKED" in decision` check works, but borderline queries pass through inconsistently.
-
-**Output guardrail:**
-
-- Only checks 3 hard-coded `bad_phrases`. This is essentially useless — any real prompt leak or hallucination would use different phrasing.
-
-### Better Approach with LangChain
-
-LangChain lets you plug in structured output parsers + validators:
-
-- **Input**: Use a `PydanticOutputParser` with a `GuardrailDecision` model — forces the LLM to return structured `{decision: "ALLOWED"|"BLOCKED", reason: str}` which is much more reliable to parse.
-- **Output**: Use `StrOutputParser` + a custom `RunnableLambda` validator that checks semantic conditions (response is in English, doesn't contain SQL artifacts, has a minimum length, etc.).
-
----
-
-## Should You Switch to LangChain?
-
-**Short answer: Yes, partially — for the SQL chain and memory. Keep FastAPI and your custom DB layer.**
-
-### What LangChain Gives You Here
-
-| Problem                     | LangChain Solution                                              |
-| --------------------------- | --------------------------------------------------------------- |
-| SQL converter wrong answers | `SQLDatabaseChain` or `create_sql_agent` with proven prompts    |
-| Memory misbehaving          | `RunnableWithMessageHistory` + session management               |
-| Guardrails unreliable       | `PydanticOutputParser` for structured decisions                 |
-| Retry logic                 | `with_retry()` built into runnables                             |
-| Prompt conflicts            | `ChatPromptTemplate` clearly separates system/human/ai messages |
-
-### What to Keep Custom
-
-- `FastAPI` endpoint layer ✅ (LangChain has no opinion here)
-- `psycopg2` connection pool in `db.py` ✅ (pass it to LangChain's `SQLDatabase`)
-- `vector_retriever.py` ✅ (or replace with `PGVector` from `langchain_community`)
-- `logger.py` ✅ (plug in as LangChain callbacks)
-
-### Migration Risk
-
-- Low — LangChain wraps your existing Ollama and Postgres, it doesn't replace them.
-- `langchain-ollama` package gives a drop-in `ChatOllama(model="qwen2:1.5b")` LLM object.
-- You can migrate **one chain at a time** (start with SQL, leave RAG alone).
-
----
-
-## Recommended Action Plan
-
-### Phase 1: Fix the SQL bugs NOW (no new deps needed)
-
-1. Fix `build_sql()` — the column-dropping bug (5 min)
-2. Fix `generate_plan()` — merge the dual-prompt into a single clean system prompt
-3. Fix `schema_to_text()` — include column types in the text
-
-### Phase 2: Upgrade LLM model
-
-- Pull `ollama pull llama3.1:8b` or `ollama pull qwen2.5-coder:7b`
-- Update `client.py` model name
-
-### Phase 3: Migrate to LangChain (recommended)
-
-```
-pip install langchain langchain-ollama langchain-community langchain-core
+```powershell
+psql -U <db_user> -d <db_name> -f data\rag_db.sql
 ```
 
-- Refactor `sql_retriever.py` → LangChain SQL agent
-- Refactor `memory.py` → `RunnableWithMessageHistory`
-- Refactor `guardrails.py` → `PydanticOutputParser`
+4. Load documentation embeddings after the DB is ready:
 
-### Phase 4: Wire memory back in
-
-- Add `session_id: str` parameter to the `/ask` endpoint
-- Store history in Postgres (a `chat_history` table) or Redis
-
----
-
-## Quick Wins (Fix Right Now Without LangChain)
-
-```python
-# BUG FIX 1: build_sql() in sql_retriever.py — always include target column
-else:
-    selections.append(col)   # Remove the `if not group_by:` guard
-
-# BUG FIX 2: schema_to_text() in schema.py — include types
-def schema_to_text(schema):
-    text = ""
-    for table, details in schema.items():
-        cols = ", ".join([f"{c} {t.upper()}" for c, t in details["columns"].items()])
-        text += f"Table: {table}({cols})\n"
-    return text
-
-# BUG FIX 3: generate_plan() — stop double-injecting schema
-def generate_plan(query):
-    schema_text = schema_to_text(SCHEMA)
-    system_prompt = get_system_prompt()   # already has schema + rules
-    return ask_llm(query, system_prompt=system_prompt)  # pass only user query
+```powershell
+.\venv\Scripts\python.exe scripts\embed_docs.py
 ```
+
+5. Run the API:
+
+```powershell
+uvicorn app.api.main:app --reload --port 8001
+```
+
+If Windows blocks port `8001` with `WinError 10013`, use another port:
+
+```powershell
+uvicorn app.api.main:app --reload --port 8010
+```
+
+Open the local UI:
+
+```text
+http://127.0.0.1:8001/
+```
+
+## API Usage
+
+Health check:
+
+```http
+GET /health
+```
+
+Ask endpoint:
+
+```http
+POST /ask
+Content-Type: application/json
+```
+
+Request:
+
+```json
+{
+  "query": "Who slept the longest?",
+  "session_id": "demo-session",
+  "community_id": 3
+}
+```
+
+Example response:
+
+```json
+{
+  "query": "Who slept the longest?",
+  "answer": "Leela Varma has the highest sleep duration: 430 minutes.",
+  "community_id": 3,
+  "community_name": "Lotus Wellness Home",
+  "trace_id": "...",
+  "latency_ms": 12.3
+}
+```
+
+History:
+
+```http
+GET /history/{session_id}?community_id=3
+DELETE /history/{session_id}?community_id=3
+```
+
+Guardrail debug:
+
+```http
+GET /debug/guardrail?query=Who%20needs%20more%20care
+```
+
+## Quick Manual Checks
+
+Run these after the server starts.
+
+```powershell
+$body = @{
+  query = "List all residents."
+  session_id = "manual-check"
+  community_id = 3
+} | ConvertTo-Json
+
+Invoke-RestMethod -Uri "http://127.0.0.1:8001/ask" -Method Post -ContentType "application/json" -Body $body
+```
+
+Useful retrieval checks:
+
+```text
+Which community am I viewing?
+List all residents.
+Give me the details of resident with id 11.
+What is Devendra Patil blood pressure?
+What is the average BP?
+Show step count of all residents.
+Who slept the longest?
+Give only one resident who requires more care.
+Who is most healthy?
+Show status of DEV4.
+Which device has weakest signal?
+What does error E-404 mean?
+What is the privacy and security policy?
+```
+
+## Verification Commands
+
+Syntax check:
+
+```powershell
+.\venv\Scripts\python.exe -c "import ast, pathlib; files=list(pathlib.Path('app').rglob('*.py'))+list(pathlib.Path('scripts').rglob('*.py')); [ast.parse(f.read_text(), filename=str(f)) for f in files]; print(f'syntax ok: {len(files)} files')"
+```
+
+Dependency check:
+
+```powershell
+.\venv\Scripts\python.exe -m pip check
+```
+
+There is currently no committed pytest test suite. Retrieval should be verified through the live `/ask` flow because it depends on the active PostgreSQL data, Redis/session state, and configured RAG/LLM services.
+
+## Deployment Notes
+
+Before deployment:
+
+- Use production `.env` values. Do not hardcode DB passwords or API keys.
+- Ensure PostgreSQL is reachable and `data/rag_db.sql` has been applied.
+- Ensure pgvector is installed if full vector search is required.
+- Run `scripts/embed_docs.py` whenever documentation markdown files change.
+- Ensure the dashboard sends the correct `community_id` with every `/ask` call.
+- Run with a production ASGI server setup, for example Uvicorn behind Nginx or a managed load balancer.
+- Restrict CORS origins for production. The current code allows all origins for local/demo use.
+- Review logging and PHI/PII handling before exposing real resident data.
+
+## Current Design Choice
+
+This project intentionally uses deterministic SQL retrieval for structured data instead of relying only on an LLM to generate SQL. That is safer for resident data because community isolation and metric logic are enforced in backend code.
+
+RAG is used for unstructured documents and policies. It should not be used as the source of truth for resident health metrics.
