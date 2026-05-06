@@ -37,18 +37,40 @@ FORCE_RAG_WORDS = [
     "escalate", "escalated", "escalation", "clinical staff", "technical staff",
     "privacy", "security", "policy", "procedure", "handoff",
 ]
+FORCE_RAG_UNAMBIGUOUS_WORDS = [
+    "manual", "documentation", "document", "troubleshoot", "troubleshooting",
+    "firmware", "ota", "wifi", "router", "gateway", "reset", "recalibrate",
+    "calibration", "flashing", "blink", "blinking", "red light", "green light",
+    "error code", "e-404", "sleep mode", "companion app",
+    "privacy", "security", "policy", "procedure", "handoff",
+]
 FORCE_SQL_WORDS = [
-    "resident", "residents", "patient", "patients", "residence", "age", "flat", "room", "bp", "sugar", "step", "sleep", "medical", "intake",
-    "metric", "report", "analysis", "score", "glucose", "systolic", "diastolic",
-    "low", "high", "avg", "average", "sum", "count", "history", "record",
-    "older", "younger", "oldest", "youngest",
-    "who is", "signal", "uptime",
-    "cpu", "temperature", "humidity", "pressure", "voltage", "current",
-    "power", "energy", "device status",
+    "resident", "residents", "patient", "patients", "residence", "age", "ages", "flat", "flats",
+    "room", "rooms", "bp", "sugar", "step", "steps", "sleep", "slept", "medical", "intake",
+    "prescribed", "prescription", "prescriptions", "treatment", "medication", "medications",
+    "metric", "report", "analysis", "score", "scores", "glucose", "systolic", "diastolic",
+    "low", "high", "avg", "average", "sum", "count", "history", "histories",
+    "record", "records", "detail", "details", "info", "information", "profile", "profiles",
+    "older", "younger", "oldest", "youngest", "longest", "shortest",
+    "care", "priority", "prioritize", "risk", "risks", "critical", "attention",
+    "healthy", "healthier", "healthy", "healthiest", "unhealthy", "unhealthier", "unhealthiest", "stable", "unstable",
+    "vital", "vitals", "who is", "signal", "uptime",
+    "cpu", "processor", "load", "temperature", "humidity", "pressure", "voltage", "current",
+    "power", "energy", "device", "devices", "board", "boards", "telemetry", "device status",
 ]
 FORCE_SQL_PHRASES = [
     "more than", "less than", "higher than", "lower than",
-    "more care", "less care", "needs care", "need care", "overall health",
+    "more care", "most care", "less care", "least care", "needs care", "need care",
+    "more acre", "most acre", "less acre", "least acre",
+    "requires care", "require care", "requires more care", "requires less care",
+    "requires more acre", "requires less acre",
+    "highest care", "highest priority", "lowest care", "lowest priority",
+    "care priority", "overall health", "health metrics", "health risk",
+    "risk score", "needs attention", "need attention", "vital signs",
+    "most healthy", "healthiest resident", "not healthy", "least healthy",
+    "unhealthy resident", "unhealthiest resident", "most unhealthy", "best health", "worst health",
+    "poorest health", "poor health", "most stable", "least stable",
+    "lowest risk", "highest risk", "most at risk",
 ]
 FORCE_CHAT_EXACT = {"hi", "hello", "hey", "help", "thanks", "thank you", "bye"}
 FORCE_CHAT_PHRASES = ["what are you", "previous chat", "chat history", "greet yourself"]
@@ -60,6 +82,19 @@ SQL_LOOKUP_PHRASES = [
     "details of", "detail of", "information on", "information about",
     "tell me about", "show me details of", "give the details of",
 ]
+AGE_LOOKUP_RE = re.compile(
+    r"\b(?:(?:h?ow)\s+old\s+is|(?:what\s+is\s+)?(?:the\s+)?age\s+of)\s+"
+    r"(?:resident\s+|patient\s+)?[a-z]+(?:\s+[a-z]+){1,2}\b",
+    re.IGNORECASE,
+)
+ROOM_LOOKUP_RE = re.compile(
+    r"\b(?:(?:where\s+(?:does|is))\s+(?:resident\s+|patient\s+)?"
+    r"[a-z]+(?:\s+[a-z]+){1,2}\s+(?:stay|staying|live|living|assigned)|"
+    r"(?:what|which)\s+(?:flat|room)(?:\s+(?:number|no))?\s+(?:is|does)\s+"
+    r"(?:resident\s+|patient\s+)?[a-z]+(?:\s+[a-z]+){1,2}(?:\s+(?:in|have|has))?)\b",
+    re.IGNORECASE,
+)
+DEVICE_ID_RE = re.compile(r"\bdev[1-5]\b", re.IGNORECASE)
 ACKNOWLEDGEMENT_WORDS = [
     "ok", "okay", "fine", "alright", "got it", "cool", "understood",
     "thanks", "thank you", "noted", "sure", "yep", "yes",
@@ -74,9 +109,16 @@ GREETING_RESPONSES = {
 _NAME_LOOKUP_RE = re.compile(r"\b[a-z]+(?:\s+[a-z]+){1,2}\b")
 
 _GENERIC_EXPLANATION_SQL_BLOCKERS = [
-    "resident", "residents", "patient", "patients", "age", "flat", "room", "history", "intake",
+    "resident", "residents", "patient", "patients", "age", "ages", "flat", "flats", "room", "rooms",
+    "history", "histories", "intake", "prescribed", "prescription", "prescriptions",
+    "treatment", "medication", "medications",
     "report", "metric", "average", "avg", "count", "sum", "highest", "lowest",
     "best", "worst", "most", "least", "top", "bottom", "chart", "graph",
+    "bp", "blood pressure", "sugar", "glucose", "steps", "step", "sleep", "slept",
+    "score", "scores", "quality", "duration", "systolic", "diastolic", "longest", "shortest",
+    "care", "priority", "prioritize", "risk", "risks", "health metrics",
+    "critical", "attention", "healthy", "healthiest", "unhealthy", "unhealthiest",
+    "stable", "unstable", "vital", "vitals", "vital signs",
     "compare", "comparison", "details", "detail", "record", "records",
     "more than", "less than", "higher than", "lower than",
 ]
@@ -86,6 +128,8 @@ _DOC_ROUTING_DISTANCE = 0.93
 def _looks_like_resident_lookup(query: str) -> bool:
     if any(_contains_term(query, word) for word in FORCE_RAG_WORDS):
         return False
+    if AGE_LOOKUP_RE.search(query) or ROOM_LOOKUP_RE.search(query):
+        return True
     if not any(_contains_term(query, phrase) for phrase in SQL_LOOKUP_PHRASES):
         return False
     return _NAME_LOOKUP_RE.search(query) is not None
@@ -108,11 +152,19 @@ def _looks_like_generic_explanatory_query(query: str) -> bool:
 
 def _looks_like_clear_sql_query(query: str) -> bool:
     q = query.lower().strip()
+    if DEVICE_ID_RE.search(q):
+        return True
+    if AGE_LOOKUP_RE.search(q) or ROOM_LOOKUP_RE.search(q):
+        return True
     if any(phrase in q for phrase in FORCE_SQL_PHRASES):
         return True
     if _looks_like_resident_lookup(q):
         return True
     return any(_contains_term(q, word) for word in FORCE_SQL_WORDS)
+
+
+def _looks_like_unambiguous_documentation_query(query: str) -> bool:
+    return any(_contains_term(query, word) for word in FORCE_RAG_UNAMBIGUOUS_WORDS)
 
 
 def _format_chat_history(chat_history: list[dict] | None, limit: int = 3) -> str:
@@ -132,14 +184,21 @@ def classify_intent(query: str) -> str:
     if q in FORCE_CHAT_EXACT or any(_contains_term(q, phrase) for phrase in FORCE_CHAT_PHRASES) or q in ACKNOWLEDGEMENT_WORDS:
         return "CHAT"
 
+    # Hard documentation phrases win first so "sleep mode" is not treated as a
+    # resident sleep metric.
+    if _looks_like_unambiguous_documentation_query(q):
+        return "RAG"
+
+    # Data questions win before generic "what is / who is" handling. This keeps
+    # resident follow-ups such as "what are their ages?" in SQL.
+    if _looks_like_clear_sql_query(q):
+        return "SQL"
+
     if _looks_like_generic_explanatory_query(q):
         return "RAG"
 
     if any(_contains_term(q, word) for word in FORCE_RAG_WORDS):
         return "RAG"
-
-    if _looks_like_clear_sql_query(q):
-        return "SQL"
 
     if has_relevant_documentation(query, max_distance=_DOC_ROUTING_DISTANCE):
         return "RAG"
@@ -158,7 +217,12 @@ def classify_intent(query: str) -> str:
         return "SQL"
 
 
-def route_query(query: str, original_query: str | None = None, chat_history: list[dict] | None = None) -> dict:
+def route_query(
+    query: str,
+    original_query: str | None = None,
+    chat_history: list[dict] | None = None,
+    community_id: int = 1,
+) -> dict:
     intent = classify_intent(query)
     raw_query = (original_query or query).strip()
     q_lower = raw_query.lower().strip()
@@ -194,7 +258,7 @@ def route_query(query: str, original_query: str | None = None, chat_history: lis
 
     if intent == "SQL":
         logger.info("Routing to SQL...")
-        res = handle_sql(query)
+        res = handle_sql(query, community_id=community_id)
         if "error" in res and not any(_contains_term(query.lower(), word) for word in ["iot", "signal", "uptime"]):
             res["answer"] = "I couldn't find matches in the database. Please check the name or ID."
         return res
