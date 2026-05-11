@@ -27,24 +27,35 @@ _INJECTION_PATTERNS = [
 _INJECTION_RE = re.compile("|".join(_INJECTION_PATTERNS), re.IGNORECASE)
 
 _DOMAIN_KEYWORDS = [
-    "device", "sensor", "board", "dev1", "dev2", "dev3", "dev4", "dev5",
+    "device", "devices", "sensor", "sensors", "board", "boards", "telemetry",
+    "dev1", "dev2", "dev3", "dev4", "dev5",
     "iot", "hardware", "firmware", "ota", "wifi", "router", "gateway",
     "microcontroller", "esp32", "arduino", "raspberry", "node", "unit",
     "active", "offline", "online", "connected", "connection",
     "resident", "residents", "patient", "patients", "flat", "flats", "age", "ages", "room", "rooms",
     "medical", "history", "histories", "prescribed", "intake", "medication", "medications",
+    "hypertension", "diabetes", "pre-diabetes", "prediabetes", "arthritis", "asthma",
+    "cardiovascular", "cardiac", "osteoporosis", "thyroid", "surgery", "post-surgery",
+    "mobility", "chronic", "metformin", "amlodipine", "paracetamol", "salbutamol",
+    "atorvastatin", "aspirin", "calcium", "vitamin", "telmisartan", "levothyroxine",
+    "multivitamin",
     "doctor", "clinical", "clinician", "nurse", "staff",
     "escalate", "escalated", "escalation", "handoff", "support", "operator",
     "policy", "procedure", "privacy", "security", "sensitive", "hipaa",
     "health", "healthier", "healthy", "healthiest", "unhealthy", "unhealthier", "unhealthiest", "stable", "unstable",
     "report", "bp", "blood pressure",
-    "systolic", "diastolic", "sugar", "glucose", "steps", "sleep", "analytics",
+    "systolic", "diastolic", "sugar", "glucose", "step", "steps", "walked", "walking",
+    "sleep", "slept", "analytics",
     "quality", "duration", "patient", "score", "scores", "vital", "vitals",
-    "critical", "attention", "risk", "priority", "prioritize",
+    "critical", "attention", "risk", "risks", "priority", "prioritize",
+    "unwell", "well", "better", "worse", "poor", "poorest", "concern", "concerns",
     "signal", "uptime", "cpu", "temperature", "moisture", "battery",
     "humidity", "pressure", "voltage", "current", "power", "energy",
     "average", "avg", "sum", "count", "max", "min", "total", "mean",
-    "peak", "lowest", "highest", "last", "latest", "historical",
+    "peak", "lowest", "highest", "above", "below", "over", "under", "greater", "fewer",
+    "best", "worst", "most", "least", "top", "bottom",
+    "fewest", "longest", "shortest", "oldest", "eldest", "youngest", "older",
+    "younger", "last", "latest", "historical",
     "location", "zone", "floor", "building", "area", "site", "warehouse",
     "flashing", "error", "reset", "recalibrate", "calibrat", "blink",
     "sleep mode", "e-404", "red light", "green light", "trouble", "broken",
@@ -53,7 +64,7 @@ _DOMAIN_KEYWORDS = [
     "query", "table", "report", "analytics", "graph", "chart",
     "yesterday", "today", "last hour", "last week", "month", "year",
     "list", "show", "find", "check", "get", "tell", "monitor", "help",
-    "care", "context", "question", "follow", "mean",
+    "care", "needs", "need", "requires", "require", "context", "question", "follow", "mean",
 ]
 _SHORT_GREETING_TERMS = ["hi", "hello", "hey", "help", "ankit", "i am"]
 
@@ -86,6 +97,16 @@ _RESIDENT_LOOKUP_PATTERNS = [
 ]
 _RESIDENT_LOOKUP_RE = re.compile("|".join(_RESIDENT_LOOKUP_PATTERNS), re.IGNORECASE)
 
+_DOMAIN_QUERY_PATTERNS = [
+    r"\bwho\s+(?:slept|walked)\b",
+    r"\bwho\s+(?:needs?|requires?|should\s+get)\b.*\b(?:care|attention|monitoring|support|priority)\b",
+    r"\b(?:which|who)\b.*\b(?:healthiest|unhealthiest|oldest|eldest|youngest|longest|shortest)\b",
+    r"\b(?:highest|lowest|best|worst|most|least|top|bottom|fewest)\b.*\b(?:bp|blood pressure|sugar|glucose|steps?|sleep|score|duration|uptime|signal|cpu)\b",
+    r"\b(?:bp|blood pressure|sugar|glucose|steps?|sleep|slept|vitals?)\b.*\b(?:highest|lowest|best|worst|most|least|average|avg|mean|longest|shortest)\b",
+    r"\bdev[0-9]+\b",
+]
+_DOMAIN_QUERY_RE = re.compile("|".join(_DOMAIN_QUERY_PATTERNS), re.IGNORECASE)
+
 
 def input_guardrail(query: str) -> bool:
     """
@@ -112,6 +133,9 @@ def input_guardrail(query: str) -> bool:
         return True
 
     if _RESIDENT_LOOKUP_RE.search(query_lower):
+        return True
+
+    if _DOMAIN_QUERY_RE.search(query_lower):
         return True
 
     if _DOMAIN_KEYWORDS_RE.search(query_lower):

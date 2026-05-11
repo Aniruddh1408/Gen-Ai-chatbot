@@ -151,9 +151,19 @@ _RANKING_TERMS = {
     "least",
     "fewest",
     "oldest",
+    "eldest",
     "youngest",
     "runner-up",
     "runner up",
+}
+
+_NON_RESIDENT_NAME_CANDIDATES = {
+    "oldest",
+    "eldest",
+    "youngest",
+    "the oldest",
+    "the eldest",
+    "the youngest",
 }
 
 _METRIC_RANKING_RULES = [
@@ -539,6 +549,178 @@ _NUMBER_WORDS = {
     "ten": 10,
 }
 
+_RESIDENT_NAME_STOPWORDS = {
+    "resident", "residents", "patient", "patients", "community", "this", "that",
+    "these", "those", "all", "their", "his", "her", "him", "them", "who",
+    "what", "which", "where", "when", "why", "how", "is", "are", "was",
+    "were", "the", "a", "an", "has", "have", "with",
+    "above", "below", "over", "under", "less", "more", "greater", "fewer",
+    "medical", "history", "medication", "prescribed", "details", "room",
+    "rooms", "flat", "flats", "age", "ages",
+}
+
+_RESIDENT_TEXT_SEARCH_RULES = [
+    {
+        "label": "hypertension",
+        "patterns": [r"\bhypertension\b"],
+        "columns": ["r.health_medical_history"],
+        "terms": ["hypertension"],
+    },
+    {
+        "label": "diabetes",
+        "patterns": [r"\bdiabetes\b", r"\btype\s+2\s+diabetes\b"],
+        "columns": ["r.health_medical_history"],
+        "terms": ["diabetes"],
+        "exclude_terms": ["pre-diabetes", "prediabetes"],
+    },
+    {
+        "label": "pre-diabetes",
+        "patterns": [r"\bpre[-\s]?diabetes\b", r"\bprediabetes\b"],
+        "columns": ["r.health_medical_history"],
+        "terms": ["pre-diabetes", "prediabetes"],
+    },
+    {
+        "label": "arthritis",
+        "patterns": [r"\barthritis\b", r"\bjoint pain\b"],
+        "columns": ["r.health_medical_history"],
+        "terms": ["arthritis", "joint pain"],
+    },
+    {
+        "label": "asthma",
+        "patterns": [r"\basthma\b"],
+        "columns": ["r.health_medical_history"],
+        "terms": ["asthma"],
+    },
+    {
+        "label": "cardiac or cardiovascular history",
+        "patterns": [r"\bcardiac\b", r"\bcardiovascular\b", r"\bheart\b"],
+        "columns": ["r.health_medical_history"],
+        "terms": ["cardiac", "cardiovascular"],
+    },
+    {
+        "label": "osteoporosis",
+        "patterns": [r"\bosteoporosis\b"],
+        "columns": ["r.health_medical_history"],
+        "terms": ["osteoporosis"],
+    },
+    {
+        "label": "thyroid disorder",
+        "patterns": [r"\bthyroid\b"],
+        "columns": ["r.health_medical_history"],
+        "terms": ["thyroid"],
+    },
+    {
+        "label": "post-surgery support",
+        "patterns": [r"\bpost[-\s]?surgery\b", r"\bsurgery\b", r"\bmobility support\b"],
+        "columns": ["r.health_medical_history"],
+        "terms": ["post-surgery", "post surgery", "mobility support"],
+    },
+    {
+        "label": "Metformin",
+        "patterns": [r"\bmetformin\b"],
+        "columns": ["r.medical_intake_prescribed"],
+        "terms": ["metformin"],
+    },
+    {
+        "label": "Amlodipine",
+        "patterns": [r"\bamlodipine\b"],
+        "columns": ["r.medical_intake_prescribed"],
+        "terms": ["amlodipine"],
+    },
+    {
+        "label": "Atorvastatin",
+        "patterns": [r"\batorvastatin\b"],
+        "columns": ["r.medical_intake_prescribed"],
+        "terms": ["atorvastatin"],
+    },
+    {
+        "label": "Calcium or Vitamin D",
+        "patterns": [r"\bcalcium\b", r"\bvitamin\s+d\b"],
+        "columns": ["r.medical_intake_prescribed"],
+        "terms": ["calcium", "vitamin d"],
+    },
+    {
+        "label": "Levothyroxine",
+        "patterns": [r"\blevothyroxine\b"],
+        "columns": ["r.medical_intake_prescribed"],
+        "terms": ["levothyroxine"],
+    },
+]
+
+_THRESHOLD_PATTERNS = [
+    (r"\b(?:above|over|greater\s+than|more\s+than|higher\s+than)\s+(\d+(?:\.\d+)?)\b", ">", "above"),
+    (r"\b(?:at\s+least|minimum|min)\s+(\d+(?:\.\d+)?)\b", ">=", "at least"),
+    (r"\b(?:below|under|less\s+than|fewer\s+than|lower\s+than)\s+(\d+(?:\.\d+)?)\b", "<", "below"),
+    (r"\b(?:at\s+most|maximum|max|no\s+more\s+than)\s+(\d+(?:\.\d+)?)\b", "<=", "at most"),
+]
+
+_METRIC_THRESHOLD_RULES = [
+    {
+        "metric": "sleep_quality",
+        "patterns": [r"\bsleep score\b", r"\bsleep quality\b", r"\bsleep quality score\b"],
+        "label": "sleep quality score",
+        "kind": "sleep",
+        "column": "s.sleep_quality_score",
+        "value_column": "s.sleep_quality_score",
+        "unit": "",
+    },
+    {
+        "metric": "sleep_duration",
+        "patterns": [r"\bslept\b", r"\bsleep duration\b", r"\bsleep time\b", r"\bminutes\b"],
+        "label": "sleep duration",
+        "kind": "sleep",
+        "column": "s.sleep_duration_minutes",
+        "value_column": "s.sleep_duration_minutes",
+        "unit": " minutes",
+    },
+    {
+        "metric": "bp",
+        "patterns": [r"\bbp\b", r"\bblood pressure\b", r"\bsystolic\b"],
+        "label": "systolic blood pressure",
+        "kind": "health",
+        "column": "h.bp_systolic",
+        "value_column": "h.bp_systolic",
+        "unit": " mmHg",
+    },
+    {
+        "metric": "sugar",
+        "patterns": [r"\bsugar\b", r"\bglucose\b"],
+        "label": "sugar level",
+        "kind": "health",
+        "column": "h.sugar_level",
+        "value_column": "h.sugar_level",
+        "unit": "",
+    },
+    {
+        "metric": "steps",
+        "patterns": [r"\bsteps\b", r"\bstep count\b", r"\bwalked\b", r"\bwalking\b"],
+        "label": "step count",
+        "kind": "activity",
+        "column": "a.steps_count",
+        "value_column": "a.steps_count",
+        "unit": " steps",
+    },
+    {
+        "metric": "age",
+        "patterns": [r"\bage\b", r"\bold\b"],
+        "label": "age",
+        "kind": "resident",
+        "column": "r.age",
+        "value_column": "r.age",
+        "unit": " years",
+    },
+]
+
+
+def _is_plausible_resident_name(candidate: str) -> bool:
+    words = [word.strip(" .,?!():'\"").lower() for word in candidate.split()]
+    words = [word for word in words if word]
+    if len(words) < 2:
+        return False
+    if any(word in _RESIDENT_NAME_STOPWORDS for word in words):
+        return False
+    return True
+
 
 def _extract_resident_name(query: str) -> str | None:
     q = query.lower().replace("’", "'").strip()
@@ -577,7 +759,7 @@ def _extract_resident_name(query: str) -> str | None:
                 "these residents",
                 "those residents",
                 "community residents",
-            }:
+            } and candidate not in _NON_RESIDENT_NAME_CANDIDATES and _is_plausible_resident_name(candidate):
                 return candidate.title()
     return None
 
@@ -602,9 +784,16 @@ def _extract_resident_id(query: str) -> int | None:
 
 def _detect_resident_profile_plan(query: str) -> dict | None:
     q_lower = query.lower()
+    if _has_ranking_request(q_lower):
+        return None
+
+    resident_id = _extract_resident_id(query)
+    resident_name = _extract_resident_name(query)
+    if resident_id is None and resident_name is None and _is_resident_collection_query(q_lower):
+        return None
+
     for rule in _RESIDENT_PROFILE_RULES:
         if any(re.search(pattern, q_lower) for pattern in rule["patterns"]):
-            resident_id = _extract_resident_id(query)
             if resident_id is not None:
                 return {
                     "table": "residents",
@@ -614,7 +803,6 @@ def _detect_resident_profile_plan(query: str) -> dict | None:
                     "_profile_field": rule["name"],
                 }
 
-            resident_name = _extract_resident_name(query)
             if not resident_name:
                 return None
 
@@ -731,27 +919,42 @@ def _is_resident_collection_query(q_lower: str) -> bool:
 
 
 def _has_ranking_request(q_lower: str) -> bool:
-    return any(term in q_lower for term in _RANKING_TERMS) or re.search(r"\btop\s+\d+\b", q_lower) is not None
+    return any(
+        re.search(rf"(?<!\w){re.escape(term)}(?!\w)", q_lower)
+        for term in _RANKING_TERMS
+    ) or re.search(r"\btop\s+\d+\b", q_lower) is not None
+
+
+def _detect_resident_age_rank_type(q_lower: str) -> str | None:
+    if re.search(r"\b(?:oldest|eldest|senior[-\s]?most)\b", q_lower):
+        return "oldest"
+    if re.search(r"\byoungest\b", q_lower):
+        return "youngest"
+    return None
 
 
 def _detect_resident_aggregate_plan(query: str) -> dict | None:
     q_lower = query.lower().strip()
     has_resident_scope = any(term in q_lower for term in ["resident", "residents", "patient", "patients"])
-    if not has_resident_scope:
+    age_rank_type = _detect_resident_age_rank_type(q_lower)
+    age_average_requested = any(term in q_lower for term in ["average age", "avg age", "mean age"])
+    if not has_resident_scope and not age_rank_type and not age_average_requested:
         return None
 
     if any(term in q_lower for term in ["how many", "count", "number of", "total"]):
         return {"_macro": "resident_aggregate", "_aggregate": "count"}
 
-    if any(term in q_lower for term in ["average age", "avg age", "mean age"]):
+    if age_average_requested:
         return {"_macro": "resident_aggregate", "_aggregate": "average_age"}
 
     limit = 1
-    count_match = re.search(r"\b(?:top|oldest|youngest)\s+(\d+)\b", q_lower)
+    count_match = re.search(r"\b(?:top|oldest|eldest|youngest)\s+(\d+)\b", q_lower)
+    if not count_match:
+        count_match = re.search(r"\b(\d+)\s+(?:oldest|eldest|youngest)\b", q_lower)
     if count_match:
         limit = max(int(count_match.group(1)), 1)
 
-    if "oldest" in q_lower:
+    if age_rank_type == "oldest":
         return {
             "table": "residents",
             "column": "residents.name, residents.age",
@@ -763,7 +966,7 @@ def _detect_resident_aggregate_plan(query: str) -> dict | None:
             "_rank_type": "oldest",
         }
 
-    if "youngest" in q_lower:
+    if age_rank_type == "youngest":
         return {
             "table": "residents",
             "column": "residents.name, residents.age",
@@ -988,6 +1191,218 @@ def _run_resident_average_metric(plan: dict, community_id: int) -> dict:
         "sql": sql,
         "result": result,
         "answer": answer,
+    }
+
+
+def _detect_resident_text_search_plan(query: str) -> dict | None:
+    q_lower = query.lower().strip()
+    has_lookup_shape = (
+        re.search(r"\b(?:who|which|list|show|find|get|any)\b", q_lower) is not None
+        or re.search(r"\b(?:residents|patients|has|have|with|takes|taking|prescribed|on)\b", q_lower) is not None
+    )
+    if not has_lookup_shape:
+        return None
+
+    for rule in _RESIDENT_TEXT_SEARCH_RULES:
+        if any(re.search(pattern, q_lower) for pattern in rule["patterns"]):
+            return {"_macro": "resident_text_search", **rule}
+    return None
+
+
+def _format_resident_text_search_answer(plan: dict, result: list[tuple]) -> str:
+    label = plan.get("label", "the requested condition")
+    if not result:
+        return f"I couldn't find residents matching {label} in this community."
+
+    lines = [f"Residents matching {label}:"]
+    for name, flat_no, history, medication in result:
+        lines.append(
+            f"- {name} ({flat_no or 'room not recorded'}): "
+            f"history: {history or 'not recorded'}; medication: {medication or 'not recorded'}."
+        )
+    return "\n".join(lines)
+
+
+def _run_resident_text_search(plan: dict, community_id: int) -> dict:
+    columns = plan.get("columns", ["r.health_medical_history"])
+    terms = plan.get("terms", [])
+    exclude_terms = plan.get("exclude_terms", [])
+
+    term_conditions = []
+    params = [community_id]
+    for column in columns:
+        for term in terms:
+            term_conditions.append(f"LOWER({column}) LIKE %s")
+            params.append(f"%{str(term).lower()}%")
+
+    exclude_conditions = []
+    for column in columns:
+        for term in exclude_terms:
+            exclude_conditions.append(f"LOWER({column}) NOT LIKE %s")
+            params.append(f"%{str(term).lower()}%")
+
+    if not term_conditions:
+        return {
+            "query": "",
+            "plan": plan,
+            "sql": "",
+            "result": [],
+            "answer": f"I couldn't find residents matching {plan.get('label', 'that request')} in this community.",
+        }
+
+    sql = f"""
+    SELECT
+        r.name,
+        r.flat_no,
+        r.health_medical_history,
+        r.medical_intake_prescribed
+    FROM residents r
+    WHERE r.community_id = %s
+      AND ({" OR ".join(term_conditions)})
+    """
+    if exclude_conditions:
+        sql += " AND " + " AND ".join(exclude_conditions)
+    sql += " ORDER BY r.flat_no, r.name;"
+
+    result = run_query(sql, params)
+    return {
+        "query": "",
+        "plan": plan,
+        "sql": sql,
+        "result": result,
+        "answer": _format_resident_text_search_answer(plan, result),
+    }
+
+
+def _extract_threshold(query: str) -> dict | None:
+    q_lower = query.lower()
+    for pattern, operator, label in _THRESHOLD_PATTERNS:
+        match = re.search(pattern, q_lower)
+        if match:
+            raw_value = match.group(1)
+            value = float(raw_value) if "." in raw_value else int(raw_value)
+            return {"operator": operator, "comparison_label": label, "value": value}
+    return None
+
+
+def _detect_metric_threshold_plan(query: str) -> dict | None:
+    threshold = _extract_threshold(query)
+    if not threshold:
+        return None
+
+    q_lower = query.lower()
+    for rule in _METRIC_THRESHOLD_RULES:
+        if any(re.search(pattern, q_lower) for pattern in rule["patterns"]):
+            return {"_macro": "metric_threshold", **rule, **threshold}
+    return None
+
+
+def _threshold_order_direction(operator: str) -> str:
+    return "DESC" if operator in {">", ">="} else "ASC"
+
+
+def _format_threshold_value(value, unit: str) -> str:
+    if value is None:
+        return "not recorded"
+    return f"{value}{unit}"
+
+
+def _format_metric_threshold_answer(plan: dict, result: list[tuple]) -> str:
+    comparison = f"{plan['label']} {plan['operator']} {plan['value']}"
+    unit = plan.get("unit", "")
+
+    if not result:
+        return f"I couldn't find residents with {comparison} in this community."
+
+    lines = [f"Residents with {comparison}:"]
+    for row in result:
+        if plan.get("metric") == "bp":
+            name, flat_no, systolic, diastolic = row
+            value_text = (
+                f"{systolic}/{diastolic} mmHg"
+                if systolic is not None and diastolic is not None
+                else "not recorded"
+            )
+        else:
+            name, flat_no, value = row
+            value_text = _format_threshold_value(value, unit)
+        lines.append(f"- {name} ({flat_no or 'room not recorded'}): {value_text}")
+    return "\n".join(lines)
+
+
+def _run_metric_threshold(plan: dict, community_id: int) -> dict:
+    operator = plan["operator"]
+    threshold_value = plan["value"]
+    order_direction = _threshold_order_direction(operator)
+    kind = plan.get("kind")
+    column = plan["column"]
+
+    if kind == "resident":
+        sql = f"""
+        SELECT r.name, r.flat_no, r.age
+        FROM residents r
+        WHERE r.community_id = %s
+          AND {column} {operator} %s
+        ORDER BY {column} {order_direction}, r.name ASC;
+        """
+        params = (community_id, threshold_value)
+    elif kind == "health":
+        select_value = "h.bp_systolic, h.bp_diastolic" if plan.get("metric") == "bp" else plan["value_column"]
+        sql = f"""
+        WITH latest_health AS (
+            SELECT DISTINCT ON (resident_id)
+                resident_id, bp_systolic, bp_diastolic, sugar_level, recorded_at
+            FROM health_reports
+            ORDER BY resident_id, recorded_at DESC
+        )
+        SELECT r.name, r.flat_no, {select_value}
+        FROM residents r
+        JOIN latest_health h ON r.id = h.resident_id
+        WHERE r.community_id = %s
+          AND {column} {operator} %s
+        ORDER BY {column} {order_direction}, r.name ASC;
+        """
+        params = (community_id, threshold_value)
+    elif kind == "activity":
+        sql = f"""
+        WITH latest_activity AS (
+            SELECT DISTINCT ON (resident_id)
+                resident_id, steps_count, recorded_at
+            FROM activity_metrics
+            ORDER BY resident_id, recorded_at DESC
+        )
+        SELECT r.name, r.flat_no, {plan["value_column"]}
+        FROM residents r
+        JOIN latest_activity a ON r.id = a.resident_id
+        WHERE r.community_id = %s
+          AND {column} {operator} %s
+        ORDER BY {column} {order_direction}, r.name ASC;
+        """
+        params = (community_id, threshold_value)
+    else:
+        sql = f"""
+        WITH latest_sleep AS (
+            SELECT DISTINCT ON (resident_id)
+                resident_id, sleep_duration_minutes, sleep_quality_score, recorded_at
+            FROM sleep_analytics
+            ORDER BY resident_id, recorded_at DESC
+        )
+        SELECT r.name, r.flat_no, {plan["value_column"]}
+        FROM residents r
+        JOIN latest_sleep s ON r.id = s.resident_id
+        WHERE r.community_id = %s
+          AND {column} {operator} %s
+        ORDER BY {column} {order_direction}, r.name ASC;
+        """
+        params = (community_id, threshold_value)
+
+    result = run_query(sql, params)
+    return {
+        "query": "",
+        "plan": plan,
+        "sql": sql,
+        "result": result,
+        "answer": _format_metric_threshold_answer(plan, result),
     }
 
 
@@ -1840,7 +2255,7 @@ def _format_care_assessment_answer(query: str, assessments: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _run_care_assessment(query: str, community_id: int = 1) -> dict:
+def _run_care_assessment(query: str, community_id: int) -> dict:
     sql = """
     WITH latest_health AS (
         SELECT DISTINCT ON (resident_id)
@@ -1893,7 +2308,7 @@ def _run_care_assessment(query: str, community_id: int = 1) -> dict:
 _COMMUNITY_SCOPED_TABLES = {"residents", "health_reports", "activity_metrics", "sleep_analytics"}
 
 
-def build_sql(plan: dict, community_id: int = 1) -> tuple[str, list]:
+def build_sql(plan: dict, community_id: int) -> tuple[str, list]:
     table = plan.get("table", "residents")
     column = plan.get("column", "residents.name")
     order_by = plan.get("order_by")
@@ -2028,7 +2443,7 @@ def normalize_filters(plan: dict) -> dict:
     plan["filters"] = normalized
     return plan
 
-def handle_sql(query: str, community_id: int = 1) -> dict:
+def handle_sql(query: str, community_id: int) -> dict:
     try:
         device_status_plan = _detect_device_status_plan(query)
         if device_status_plan:
@@ -2080,6 +2495,20 @@ def handle_sql(query: str, community_id: int = 1) -> dict:
                 }
 
             response = _run_resident_aggregate(resident_aggregate_plan, community_id)
+            response["query"] = query
+            return response
+
+        metric_threshold_plan = _detect_metric_threshold_plan(query)
+        if metric_threshold_plan:
+            logger.info(f"Using deterministic metric threshold plan: {metric_threshold_plan}")
+            response = _run_metric_threshold(metric_threshold_plan, community_id)
+            response["query"] = query
+            return response
+
+        resident_text_search_plan = _detect_resident_text_search_plan(query)
+        if resident_text_search_plan:
+            logger.info(f"Using deterministic resident text search plan: {resident_text_search_plan}")
+            response = _run_resident_text_search(resident_text_search_plan, community_id)
             response["query"] = query
             return response
 

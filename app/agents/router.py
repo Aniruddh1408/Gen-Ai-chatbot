@@ -48,10 +48,15 @@ FORCE_SQL_WORDS = [
     "resident", "residents", "patient", "patients", "residence", "age", "ages", "flat", "flats",
     "room", "rooms", "bp", "sugar", "step", "steps", "sleep", "slept", "medical", "intake",
     "prescribed", "prescription", "prescriptions", "treatment", "medication", "medications",
+    "hypertension", "diabetes", "pre-diabetes", "prediabetes", "arthritis", "asthma",
+    "cardiovascular", "cardiac", "osteoporosis", "thyroid", "surgery", "post-surgery",
+    "mobility", "chronic", "metformin", "amlodipine", "paracetamol", "salbutamol",
+    "atorvastatin", "aspirin", "calcium", "vitamin", "telmisartan", "levothyroxine",
+    "multivitamin",
     "metric", "report", "analysis", "score", "scores", "glucose", "systolic", "diastolic",
     "low", "high", "avg", "average", "sum", "count", "history", "histories",
     "record", "records", "detail", "details", "info", "information", "profile", "profiles",
-    "older", "younger", "oldest", "youngest", "longest", "shortest",
+    "older", "younger", "oldest", "eldest", "youngest", "longest", "shortest",
     "care", "priority", "prioritize", "risk", "risks", "critical", "attention",
     "healthy", "healthier", "healthy", "healthiest", "unhealthy", "unhealthier", "unhealthiest", "stable", "unstable",
     "vital", "vitals", "who is", "signal", "uptime",
@@ -59,7 +64,8 @@ FORCE_SQL_WORDS = [
     "power", "energy", "device", "devices", "board", "boards", "telemetry", "device status",
 ]
 FORCE_SQL_PHRASES = [
-    "more than", "less than", "higher than", "lower than",
+    "more than", "less than", "higher than", "lower than", "greater than",
+    "fewer than", "above", "below", "over", "under", "at least", "at most",
     "more care", "most care", "less care", "least care", "needs care", "need care",
     "more acre", "most acre", "less acre", "least acre",
     "requires care", "require care", "requires more care", "requires less care",
@@ -115,7 +121,8 @@ _GENERIC_EXPLANATION_SQL_BLOCKERS = [
     "report", "metric", "average", "avg", "count", "sum", "highest", "lowest",
     "best", "worst", "most", "least", "top", "bottom", "chart", "graph",
     "bp", "blood pressure", "sugar", "glucose", "steps", "step", "sleep", "slept",
-    "score", "scores", "quality", "duration", "systolic", "diastolic", "longest", "shortest",
+    "score", "scores", "quality", "duration", "systolic", "diastolic",
+    "oldest", "eldest", "youngest", "longest", "shortest",
     "care", "priority", "prioritize", "risk", "risks", "health metrics",
     "critical", "attention", "healthy", "healthiest", "unhealthy", "unhealthiest",
     "stable", "unstable", "vital", "vitals", "vital signs",
@@ -221,7 +228,8 @@ def route_query(
     query: str,
     original_query: str | None = None,
     chat_history: list[dict] | None = None,
-    community_id: int = 1,
+    *,
+    community_id: int,
 ) -> dict:
     intent = classify_intent(query)
     raw_query = (original_query or query).strip()

@@ -163,46 +163,301 @@ _NAME_STOPWORDS = {
     "health", "metrics", "blood", "pressure", "sleep", "quality", "sugar",
     "level", "step", "count", "latest", "details", "information", "about",
     "room", "flat", "age", "ages", "years", "community", "records",
+    "what", "which", "who", "whom", "whose", "where", "when", "why", "how",
+    "is", "are", "was", "were", "be", "being", "been", "do", "does", "did",
+    "the", "a", "an", "their", "them", "they", "his", "her", "hers", "him",
+    "this", "that", "these", "those", "all", "same", "list", "show", "give",
+    "tell", "get", "me", "please",
 }
+
+_COLLECTION_FOLLOWUP_METRIC_TERMS = [
+    "age", "ages", "old", "flat", "flats", "room", "rooms",
+    "medical history", "medical histories", "health history", "histories",
+    "medication", "medications", "intake", "prescribed", "treatment",
+    "detail", "details", "profile", "profiles", "info", "information",
+    "bp", "blood pressure", "sugar", "glucose", "steps", "step count",
+    "activity", "sleep score", "sleep quality", "sleep scores",
+    "sleep duration", "sleep time", "slept",
+]
+
+_RANKING_OR_SUPERLATIVE_TERMS = [
+    "oldest", "eldest", "youngest", "highest", "lowest", "best", "worst",
+    "most", "least", "top", "bottom", "fewest", "longest", "shortest",
+    "healthiest", "unhealthiest",
+]
+
+_AGGREGATE_TERMS = [
+    "average", "avg", "mean", "total", "count", "how many", "number of",
+]
+
+_COLLECTION_AI_MARKERS = [
+    "residents in this community:",
+    "resident ages:",
+    "resident rooms:",
+    "resident details:",
+    "resident medical histories:",
+    "resident prescribed medications:",
+    "resident blood pressure readings:",
+    "resident sugar levels:",
+    "resident step counts:",
+    "resident sleep quality scores:",
+    "resident sleep durations:",
+    "resident health metrics:",
+]
+
+
+def _contains_term(text: str, term: str) -> bool:
+    return re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text, re.IGNORECASE) is not None
+
+
+def _contains_any_term(text: str, terms: list[str]) -> bool:
+    return any(_contains_term(text, term) for term in terms)
+
+
+def _turn_mentions_resident_collection(turn: dict) -> bool:
+    user_text = str(turn.get("user", "")).lower()
+    ai_text = str(turn.get("ai", "")).lower()
+    if any(term in user_text for term in ["residents", "patients", "list of resident", "list of patient"]):
+        return True
+    return any(marker in ai_text for marker in _COLLECTION_AI_MARKERS)
 
 
 def _history_mentions_resident_collection(chat_history: list[dict]) -> bool:
     recent_history = _get_recent_meaningful_history(chat_history, limit=2)
     for turn in recent_history:
-        user_text = str(turn.get("user", "")).lower()
-        ai_text = str(turn.get("ai", "")).lower()
-        if any(term in user_text for term in ["residents", "patients", "list of resident", "list of patient"]):
-            return True
-        if "residents in this community" in ai_text:
+        if _turn_mentions_resident_collection(turn):
             return True
     return False
+
+
+def _has_specific_name_in_query(query: str) -> bool:
+    if _candidate_names_from_text(query):
+        return True
+
+    # Lowercase/manual typing variant: "devendra patil bp" or "leela varma sleep".
+    q_lower = query.lower()
+    metric_tail = (
+        r"bp|blood pressure|sugar|glucose|steps?|step count|sleep|slept|"
+        r"sleep score|sleep quality|sleep duration|age|room|flat|"
+        r"medical history|medication|prescribed|details?"
+    )
+    for match in re.finditer(rf"\b([a-z]+\s+[a-z]+(?:\s+[a-z]+)?)\s+(?:{metric_tail})\b", q_lower):
+        if _is_plausible_resident_name(match.group(1)):
+            return True
+    return False
+
+
+def _is_ranking_or_superlative_query(q_lower: str) -> bool:
+    return _contains_any_term(q_lower, _RANKING_OR_SUPERLATIVE_TERMS)
+
+
+def _metric_from_query(q_lower: str) -> str | None:
+    if _contains_any_term(q_lower, ["health metrics", "all metrics", "vitals", "vital signs"]):
+        return "all_metrics"
+    if _contains_any_term(q_lower, ["bp", "blood pressure"]):
+        return "bp"
+    if _contains_any_term(q_lower, ["sugar", "glucose"]):
+        return "sugar"
+    if _contains_any_term(q_lower, ["steps", "step count", "activity", "walked", "walking"]):
+        return "steps"
+    if _contains_any_term(q_lower, ["sleep duration", "sleep time", "slept"]):
+        return "sleep_duration"
+    if _contains_any_term(q_lower, ["sleep score", "sleep quality", "sleep scores"]):
+        return "sleep_quality"
+    if _contains_term(q_lower, "sleep"):
+        return "sleep"
+    return None
+
+
+def _ranking_direction(q_lower: str) -> str | None:
+    if _contains_any_term(q_lower, ["lowest", "least", "fewest", "worst", "bottom", "shortest"]):
+        return "ASC"
+    if _contains_any_term(q_lower, ["highest", "most", "top", "best", "longest"]):
+        return "DESC"
+    return None
+
+
+def _ranking_query_for_metric(metric: str, direction: str) -> str | None:
+    high = direction == "DESC"
+    if metric == "bp":
+        return f"Who has the {'highest' if high else 'lowest'} blood pressure in this community?"
+    if metric == "sugar":
+        return f"Who has the {'highest' if high else 'lowest'} sugar level in this community?"
+    if metric == "steps":
+        return f"Who walked the {'most' if high else 'fewest'} steps in this community?"
+    if metric == "sleep_duration":
+        return f"Who slept the {'longest' if high else 'shortest'} in this community?"
+    if metric == "sleep_quality":
+        return f"Who has the {'best' if high else 'worst'} sleep quality score in this community?"
+    return None
+
+
+def _average_query_for_metric(metric: str) -> str | None:
+    if metric == "bp":
+        return "What is the average blood pressure in this community?"
+    if metric == "sugar":
+        return "What is the average sugar level in this community?"
+    if metric == "steps":
+        return "What is the average step count in this community?"
+    if metric == "sleep_duration":
+        return "What is the average sleep duration in this community?"
+    if metric == "sleep_quality":
+        return "What is the average sleep quality score in this community?"
+    return None
+
+
+def _collection_query_for_metric(metric: str) -> str | None:
+    if metric == "all_metrics":
+        return "What are the health metrics of residents in this community?"
+    if metric == "bp":
+        return "What are the blood pressure readings of residents in this community?"
+    if metric == "sugar":
+        return "What are the sugar levels of residents in this community?"
+    if metric == "steps":
+        return "What are the step counts of residents in this community?"
+    if metric == "sleep_duration":
+        return "What are the sleep durations of residents in this community?"
+    if metric == "sleep_quality":
+        return "What are the sleep quality scores of residents in this community?"
+    if metric == "sleep":
+        return "What are the sleep metrics of residents in this community?"
+    return None
+
+
+def _named_metric_query(resident_name: str, metric: str) -> str | None:
+    if metric == "all_metrics":
+        return f"What are {resident_name}'s health metrics?"
+    if metric == "bp":
+        return f"What is {resident_name}'s blood pressure?"
+    if metric == "sugar":
+        return f"What is {resident_name}'s sugar level?"
+    if metric == "steps":
+        return f"What is {resident_name}'s step count?"
+    if metric == "sleep_duration":
+        return f"What is {resident_name}'s sleep duration?"
+    if metric == "sleep_quality":
+        return f"What is {resident_name}'s sleep quality score?"
+    if metric == "sleep":
+        return f"What are {resident_name}'s sleep metrics?"
+    return None
+
+
+def _is_metric_followup(q_lower: str, words: set[str]) -> bool:
+    if _has_specific_name_in_query(q_lower):
+        return False
+    if _is_ranking_or_superlative_query(q_lower):
+        return False
+    if _contains_any_term(q_lower, _AGGREGATE_TERMS):
+        return False
+    if q_lower.startswith(("who ", "which ")):
+        return False
+    if q_lower.startswith(("show ", "list ", "display ", "give ", "get ")):
+        return False
+    if not _metric_from_query(q_lower):
+        return False
+    if any(phrase in q_lower for phrase in _FOLLOW_UP_PHRASES):
+        return True
+    return len(words) <= 4
+
+
+def _is_explicit_resident_id_lookup(q_lower: str) -> bool:
+    if not re.search(r"\b(?:resident|patient)\b", q_lower):
+        return False
+    return re.search(r"\b(?:id|number|no\.?|#)\s*(?:is\s*)?\d+\b", q_lower) is not None
+
+
+def _rewrite_metric_followup_from_recent_context(new_query: str, chat_history: list[dict]) -> str | None:
+    q_lower = new_query.lower().strip()
+    words = {word.strip(".,?!") for word in q_lower.split()}
+    if not _is_metric_followup(q_lower, words):
+        return None
+
+    metric = _metric_from_query(q_lower)
+    if not metric:
+        return None
+
+    recent_history = _get_recent_meaningful_history(chat_history, limit=2)
+    for turn in reversed(recent_history):
+        previous_user = str(turn.get("user", "")).lower()
+        previous_ai = str(turn.get("ai", "")).lower()
+        previous_context = f"{previous_user}\n{previous_ai}"
+
+        if _turn_mentions_resident_collection(turn):
+            return _collection_query_for_metric(metric)
+
+        if _is_ranking_or_superlative_query(previous_context):
+            direction = _ranking_direction(previous_context)
+            if direction:
+                return _ranking_query_for_metric(metric, direction)
+
+        if _contains_any_term(previous_user, _AGGREGATE_TERMS):
+            return _average_query_for_metric(metric)
+
+        previous_candidates = _candidate_names_from_text(f"{turn.get('user', '')}\n{turn.get('ai', '')}")
+        if len(previous_candidates) == 1:
+            return _named_metric_query(previous_candidates[0], metric)
+
+    return None
+
+
+def _is_elliptical_collection_followup(q_lower: str, words: set[str]) -> bool:
+    if _is_ranking_or_superlative_query(q_lower):
+        return False
+
+    if _contains_any_term(q_lower, _AGGREGATE_TERMS):
+        return False
+
+    if q_lower.startswith(("who ", "which ")):
+        return False
+
+    if any(phrase in q_lower for phrase in _FOLLOW_UP_PHRASES):
+        return True
+
+    has_metric_term = any(term in q_lower for term in _COLLECTION_FOLLOWUP_METRIC_TERMS)
+    if not has_metric_term:
+        return False
+
+    # Short fragments after a resident list: "ages?", "bp readings?", "what about sugar?"
+    return len(words) <= 5
 
 
 def _rewrite_resident_collection_followup(new_query: str, chat_history: list[dict]) -> str | None:
     q_lower = new_query.lower().strip()
     words = {word.strip(".,?!") for word in q_lower.split()}
-    if not words.intersection(_PLURAL_RESIDENT_FOLLOWUP_WORDS):
+    has_plural_reference = bool(words.intersection(_PLURAL_RESIDENT_FOLLOWUP_WORDS))
+    has_collection_context = _history_mentions_resident_collection(chat_history)
+    if _has_specific_name_in_query(new_query):
+        return None
+    if _is_ranking_or_superlative_query(q_lower):
+        return None
+    if not has_plural_reference and not (
+        has_collection_context and _is_elliptical_collection_followup(q_lower, words)
+    ):
         return None
 
-    if any(term in q_lower for term in ["age", "ages", "old"]):
+    if re.search(r"\b(?:oldest|eldest|senior[-\s]?most)\b", q_lower):
+        return "Who is the oldest resident in this community?"
+    if re.search(r"\byoungest\b", q_lower):
+        return "Who is the youngest resident in this community?"
+    if _contains_any_term(q_lower, ["age", "ages", "old"]):
         return "What are the ages of residents in this community?"
-    if any(term in q_lower for term in ["flat", "flats", "room", "rooms"]):
+    if _contains_any_term(q_lower, ["flat", "flats", "room", "rooms"]):
         return "What are the room numbers of residents in this community?"
-    if any(term in q_lower for term in ["medical history", "medical histories", "health history", "histories"]):
+    if _contains_any_term(q_lower, ["medical history", "medical histories", "health history", "histories"]):
         return "What are the medical histories of residents in this community?"
-    if any(term in q_lower for term in ["medication", "medications", "intake", "prescribed", "treatment"]):
+    if _contains_any_term(q_lower, ["medication", "medications", "intake", "prescribed", "treatment"]):
         return "What are the prescribed medications of residents in this community?"
-    if any(term in q_lower for term in ["detail", "details", "profile", "profiles", "info", "information"]):
+    if _contains_any_term(q_lower, ["detail", "details", "profile", "profiles", "info", "information"]):
         return "Give the details of residents in this community."
-    if any(term in q_lower for term in ["bp", "blood pressure"]):
+    if _contains_any_term(q_lower, ["bp", "blood pressure"]):
         return "What are the blood pressure readings of residents in this community?"
-    if any(term in q_lower for term in ["sugar", "glucose"]):
+    if _contains_any_term(q_lower, ["sugar", "glucose"]):
         return "What are the sugar levels of residents in this community?"
-    if any(term in q_lower for term in ["steps", "step count", "activity"]):
+    if _contains_any_term(q_lower, ["steps", "step count", "activity"]):
         return "What are the step counts of residents in this community?"
-    if any(term in q_lower for term in ["sleep score", "sleep quality", "sleep scores"]):
+    if _contains_any_term(q_lower, ["sleep score", "sleep quality", "sleep scores"]):
         return "What are the sleep quality scores of residents in this community?"
-    if any(term in q_lower for term in ["sleep duration", "sleep time", "slept"]):
+    if _contains_any_term(q_lower, ["sleep duration", "sleep time", "slept"]):
         return "What are the sleep durations of residents in this community?"
 
     return None
@@ -222,19 +477,20 @@ def _candidate_names_from_text(text: str) -> list[str]:
     candidates: list[str] = []
 
     capitalized_patterns = [
-        r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})(?=\s+\(|'s\b|\s+is\b|\s+-)",
+        r"\b([A-Z][a-z]+(?:[ \t]+[A-Z][a-z]+){1,2})(?=[ \t]+\(|'s\b|[ \t]+is\b|[ \t]+-)",
     ]
     lower_patterns = [
-        r"\b(?:about|of|for|is)\s+([a-z]+(?:\s+[a-z]+){1,2})\b",
-        r"\b([a-z]+(?:\s+[a-z]+){1,2})'s\b",
+        r"\b(?:about|of|for|is)[ \t]+([a-z]+(?:[ \t]+[a-z]+){1,2})\b",
+        r"\b([a-z]+(?:[ \t]+[a-z]+){1,2})'s\b",
     ]
 
-    for pattern in capitalized_patterns:
-        candidates.extend(match.group(1).strip().title() for match in re.finditer(pattern, text))
+    for line in text.splitlines():
+        for pattern in capitalized_patterns:
+            candidates.extend(match.group(1).strip().title() for match in re.finditer(pattern, line))
 
-    text_lower = text.lower()
-    for pattern in lower_patterns:
-        candidates.extend(match.group(1).strip().title() for match in re.finditer(pattern, text_lower))
+        text_lower = line.lower()
+        for pattern in lower_patterns:
+            candidates.extend(match.group(1).strip().title() for match in re.finditer(pattern, text_lower))
 
     unique: list[str] = []
     for candidate in candidates:
@@ -338,6 +594,14 @@ def rewrite_query_with_memory(session_id: str, new_query: str) -> str:
     q_lower = new_query.lower().strip()
     if len(q_lower.split()) <= 3 and _SHORT_CHAT_RE.search(q_lower):
         return new_query
+
+    if _is_explicit_resident_id_lookup(q_lower):
+        return new_query
+
+    deterministic_rewrite = _rewrite_metric_followup_from_recent_context(new_query, chat_history)
+    if deterministic_rewrite:
+        logger.info(f"Query Refined deterministically: {deterministic_rewrite}")
+        return deterministic_rewrite
 
     deterministic_rewrite = _rewrite_resident_collection_followup(new_query, chat_history)
     if deterministic_rewrite:
