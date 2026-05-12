@@ -36,6 +36,13 @@ FORCE_RAG_WORDS = [
     "error code", "e-404", "sleep mode", "companion app",
     "escalate", "escalated", "escalation", "clinical staff", "technical staff",
     "privacy", "security", "policy", "procedure", "handoff",
+    "blood pressure review", "sugar level review", "sleep quality review",
+    "activity review", "step count review", "combined metric review",
+    "data freshness", "stale timestamp", "daily wellness review",
+    "shift handoff", "medication intake documentation", "fall risk review",
+    "reduced mobility follow-up", "hydration and nutrition", "missing health readings",
+    "duplicate readings", "conflicting readings", "manual entry", "device reading",
+    "safe language", "safe health summary", "traceability",
 ]
 FORCE_RAG_UNAMBIGUOUS_WORDS = [
     "manual", "documentation", "document", "troubleshoot", "troubleshooting",
@@ -43,6 +50,13 @@ FORCE_RAG_UNAMBIGUOUS_WORDS = [
     "calibration", "flashing", "blink", "blinking", "red light", "green light",
     "error code", "e-404", "sleep mode", "companion app",
     "privacy", "security", "policy", "procedure", "handoff",
+    "blood pressure review", "sugar level review", "sleep quality review",
+    "activity review", "step count review", "combined metric review",
+    "data freshness", "stale timestamp", "daily wellness review",
+    "shift handoff", "medication intake documentation", "fall risk review",
+    "reduced mobility follow-up", "hydration and nutrition", "missing health readings",
+    "duplicate readings", "conflicting readings", "manual entry", "device reading",
+    "safe language", "safe health summary", "traceability",
 ]
 FORCE_SQL_WORDS = [
     "resident", "residents", "patient", "patients", "residence", "age", "ages", "flat", "flats",
@@ -130,6 +144,13 @@ _GENERIC_EXPLANATION_SQL_BLOCKERS = [
     "more than", "less than", "higher than", "lower than",
 ]
 _DOC_ROUTING_DISTANCE = 0.93
+_METRIC_CONCEPT_RE = re.compile(
+    r"^\s*(?:what\s+(?:is|are|does)|explain|define|meaning\s+of)\s+"
+    r"(?:the\s+)?(?:sleep\s+quality\s+score|sleep\s+score|blood\s+pressure|bp|"
+    r"sugar\s+level|glucose\s+level|step\s+count|activity\s+steps|sleep\s+duration)"
+    r"(?:\s+mean)?\??\s*$",
+    re.IGNORECASE,
+)
 
 
 def _looks_like_resident_lookup(query: str) -> bool:
@@ -174,6 +195,10 @@ def _looks_like_unambiguous_documentation_query(query: str) -> bool:
     return any(_contains_term(query, word) for word in FORCE_RAG_UNAMBIGUOUS_WORDS)
 
 
+def _looks_like_metric_concept_query(query: str) -> bool:
+    return _METRIC_CONCEPT_RE.search(query) is not None
+
+
 def _format_chat_history(chat_history: list[dict] | None, limit: int = 3) -> str:
     if not chat_history:
         return ""
@@ -194,6 +219,9 @@ def classify_intent(query: str) -> str:
     # Hard documentation phrases win first so "sleep mode" is not treated as a
     # resident sleep metric.
     if _looks_like_unambiguous_documentation_query(q):
+        return "RAG"
+
+    if _looks_like_metric_concept_query(q):
         return "RAG"
 
     # Data questions win before generic "what is / who is" handling. This keeps

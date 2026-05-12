@@ -1,6 +1,7 @@
 """
 Vector (RAG) Retriever - Semantic search via pgvector + LangChain answer chain.
 """
+import re
 from pathlib import Path
 
 import requests
@@ -105,7 +106,93 @@ _SECTION_PATTERNS = [
     (["clinical staff", "clinical escalation"], ["When To Escalate To Clinical Staff", "Clinical Escalation Boundaries"]),
     (["privacy", "security"], ["Privacy And Security"]),
     (["documentation versus database", "source of truth"], ["Documentation Versus Database"]),
+    (["blood pressure review", "bp review", "vital signs"], ["Blood Pressure Review"]),
+    (["sugar level review", "glucose review"], ["Sugar Level Review"]),
+    (["sleep quality review", "sleep quality score", "sleep score meaning"], ["Sleep Quality Review"]),
+    (["activity review", "step count review", "low activity"], ["Activity And Step Count Review"]),
+    (["combined metric review", "health summary wording"], ["Combined Metric Review", "Safe Language For Health Summaries"]),
+    (["data freshness", "stale timestamp"], ["Data Freshness Before Clinical Review", "Stale Timestamp Handling"]),
+    (["daily wellness review", "wellness review"], ["Daily Wellness Review"]),
+    (["shift handoff", "handoff summary"], ["Shift Handoff Summary"]),
+    (["medication intake documentation", "prescribed intake documentation"], ["Medication Intake Documentation"]),
+    (["fall risk", "reduced mobility"], ["Fall Risk Review", "Reduced Mobility Follow-Up"]),
+    (["hydration", "nutrition"], ["Hydration And Nutrition Notes"]),
+    (["missing health readings", "missing readings"], ["Missing Health Readings"]),
+    (["duplicate readings", "conflicting readings"], ["Duplicate Or Conflicting Readings"]),
+    (["device offline during resident review"], ["Device Offline During Resident Review"]),
+    (["manual entry", "device reading"], ["Manual Entry Versus Device Reading"]),
+    (["audit", "traceability", "trace id"], ["Audit And Traceability"]),
+    (["safe language", "safe health summary"], ["Safe Language For Health Summaries"]),
 ]
+_POINT_FORMAT_TERMS = [
+    "in points",
+    "pointwise",
+    "point-wise",
+    "bullet",
+    "bullets",
+    "bullet points",
+    "list",
+    "step by step",
+    "steps",
+]
+
+
+def _wants_point_format(query: str) -> bool:
+    q_lower = query.lower()
+    return any(term in q_lower for term in _POINT_FORMAT_TERMS)
+
+
+def _ensure_sentence_punctuation(text: str) -> str:
+    cleaned = text.strip()
+    if not cleaned:
+        return cleaned
+    if cleaned[-1] in ".!?":
+        return cleaned
+    return f"{cleaned}."
+
+
+def _split_sentences(text: str) -> list[str]:
+    return [
+        _ensure_sentence_punctuation(sentence)
+        for sentence in re.split(r"(?<=[.!?])\s+", text.strip())
+        if sentence.strip()
+    ]
+
+
+def _format_section_as_points(section: str) -> str:
+    lines = [line.strip() for line in section.splitlines() if line.strip()]
+    if len(lines) <= 1:
+        return section
+
+    title = lines[0].lstrip("#").strip()
+    formatted_lines = [title]
+
+    for line in lines[1:]:
+        if line.endswith(":") and len(line.split()) <= 5:
+            formatted_lines.append("")
+            formatted_lines.append(line)
+            continue
+
+        numbered_match = re.match(r"^\d+\.\s+(.+)$", line)
+        if numbered_match:
+            formatted_lines.append(f"- {_ensure_sentence_punctuation(numbered_match.group(1))}")
+            continue
+
+        bullet_match = re.match(r"^[-*]\s+(.+)$", line)
+        if bullet_match:
+            formatted_lines.append(f"- {_ensure_sentence_punctuation(bullet_match.group(1))}")
+            continue
+
+        for sentence in _split_sentences(line):
+            formatted_lines.append(f"- {sentence}")
+
+    return "\n".join(formatted_lines)
+
+
+def _format_section_answer(query: str, section: str) -> str:
+    if _wants_point_format(query):
+        return _format_section_as_points(section)
+    return section
 
 
 def _extract_markdown_section(context: str, headings: list[str]) -> str | None:
@@ -165,7 +252,7 @@ def _section_document_answer(query: str, context: str) -> str | None:
         if any(trigger in q_lower for trigger in triggers):
             section = _load_section_from_local_docs(headings) or _extract_markdown_section(context, headings)
             if section:
-                return section
+                return _format_section_answer(query, section)
     return None
 
 
