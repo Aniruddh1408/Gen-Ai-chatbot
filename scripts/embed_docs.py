@@ -2,7 +2,9 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import psycopg2
@@ -24,7 +26,10 @@ EMBED_MODEL = os.getenv("EMBED_MODEL", "mxbai-embed-large")
 EMBED_DIM = int(os.getenv("EMBED_DIM", "1024"))
 CHUNK_SIZE = int(os.getenv("DOC_CHUNK_SIZE", "900"))
 CHUNK_OVERLAP = int(os.getenv("DOC_CHUNK_OVERLAP", "80"))
+CHUNKING_MODE = os.getenv("DOC_CHUNKING_MODE", "hybrid").strip().lower()
 SUPPORTED_EXTENSIONS = {".md", ".txt"}
+SUPPORTED_CHUNKING_MODES = {"hybrid", "recursive"}
+MARKDOWN_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 
 HTTP_SESSION = requests.Session()
 HTTP_SESSION.trust_env = False
@@ -34,6 +39,20 @@ DB_USER = os.getenv("DB_USER")
 DB_PASS = os.getenv("DB_PASS")
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = os.getenv("DB_PORT", "5433")
+
+
+@dataclass(frozen=True)
+class DocumentChunk:
+    text: str
+    heading_path: tuple[str, ...] = ()
+    section_heading: str | None = None
+    chunking_mode: str = "hybrid"
+
+
+@dataclass(frozen=True)
+class MarkdownSection:
+    body: str
+    heading_path: tuple[str, ...] = ()
 
 
 def normalize_text(text: str) -> str:
@@ -59,13 +78,100 @@ def get_embedding(text: str) -> list[float]:
     return embedding
 
 
-def build_chunks(content: str) -> list[str]:
+def _recursive_split(content: str, chunk_size: int | None = None) -> list[str]:
+    safe_chunk_size = max(int(chunk_size or CHUNK_SIZE), 1)
+    safe_overlap = min(CHUNK_OVERLAP, max(safe_chunk_size - 1, 0))
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=CHUNK_SIZE,
-        chunk_overlap=CHUNK_OVERLAP,
+        chunk_size=safe_chunk_size,
+        chunk_overlap=safe_overlap,
         separators=["\n## ", "\n### ", "\n\n", "\n", ". ", " ", ""],
     )
     return [chunk.strip() for chunk in splitter.split_text(content) if chunk.strip()]
+
+
+def _parse_markdown_sections(content: str) -> list[MarkdownSection]:
+    sections: list[MarkdownSection] = []
+    heading_stack: list[tuple[int, str]] = []
+    current_lines: list[str] = []
+    current_path: tuple[str, ...] = ()
+
+    def flush_section() -> None:
+        body = normalize_text("\n".join(current_lines))
+        if body:
+            sections.append(MarkdownSection(body=body, heading_path=current_path))
+
+    for line in content.splitlines():
+        match = MARKDOWN_HEADING_RE.match(line.strip())
+        if not match:
+            current_lines.append(line)
+            continue
+
+        flush_section()
+        current_lines = []
+
+        level = len(match.group(1))
+        title = match.group(2).strip()
+        heading_stack = [(item_level, item_title) for item_level, item_title in heading_stack if item_level < level]
+        heading_stack.append((level, title))
+        current_path = tuple(item_title for _, item_title in heading_stack)
+
+    flush_section()
+    return sections
+
+
+def _format_heading_prefix(heading_path: tuple[str, ...]) -> str:
+    return "\n".join(
+        f"{'#' * min(index + 1, 6)} {heading}"
+        for index, heading in enumerate(heading_path)
+    )
+
+
+def _section_to_chunks(section: MarkdownSection, mode: str) -> list[DocumentChunk]:
+    prefix = _format_heading_prefix(section.heading_path)
+    available_size = CHUNK_SIZE - len(prefix) - 2
+    body_chunk_size = available_size if available_size >= max(300, CHUNK_SIZE // 2) else CHUNK_SIZE
+
+    chunks: list[DocumentChunk] = []
+    for body_chunk in _recursive_split(section.body, chunk_size=body_chunk_size):
+        text = f"{prefix}\n\n{body_chunk}".strip() if prefix else body_chunk
+        chunks.append(
+            DocumentChunk(
+                text=text,
+                heading_path=section.heading_path,
+                section_heading=section.heading_path[-1] if section.heading_path else None,
+                chunking_mode=mode,
+            )
+        )
+    return chunks
+
+
+def build_document_chunks(content: str, chunking_mode: str | None = None) -> list[DocumentChunk]:
+    mode = (chunking_mode or CHUNKING_MODE).strip().lower()
+    if mode not in SUPPORTED_CHUNKING_MODES:
+        raise ValueError(
+            f"Unsupported chunking mode '{mode}'. "
+            f"Use one of: {', '.join(sorted(SUPPORTED_CHUNKING_MODES))}."
+        )
+
+    if mode == "recursive":
+        return [
+            DocumentChunk(text=chunk, chunking_mode=mode)
+            for chunk in _recursive_split(content)
+        ]
+
+    sections = _parse_markdown_sections(content)
+    if not sections:
+        sections = [MarkdownSection(body=content)]
+
+    chunks: list[DocumentChunk] = []
+    for section in sections:
+        chunks.extend(_section_to_chunks(section, mode))
+
+    return chunks
+
+
+def build_chunks(content: str, chunking_mode: str | None = None) -> list[str]:
+    return [chunk.text for chunk in build_document_chunks(content, chunking_mode=chunking_mode)]
 
 
 def connect_db():
@@ -117,13 +223,20 @@ def title_for(path: Path) -> str:
     return path.stem.replace("_", " ").replace("-", " ").title()
 
 
-def parse_metadata(path: Path, chunk_text: str) -> dict:
+def parse_metadata(path: Path, chunk_text: str, chunk: DocumentChunk | None = None) -> dict:
     text = chunk_text.lower()
     path_text = path.as_posix().lower()
     metadata = {
         "source": path.relative_to(PROJECT_ROOT).as_posix(),
         "file_type": path.suffix.lstrip("."),
+        "chunking_mode": chunk.chunking_mode if chunk else CHUNKING_MODE,
+        "chunk_size": CHUNK_SIZE,
+        "chunk_overlap": CHUNK_OVERLAP,
     }
+
+    if chunk and chunk.heading_path:
+        metadata["heading_path"] = list(chunk.heading_path)
+        metadata["section_heading"] = chunk.section_heading
 
     if any(term in text for term in ["error", "alarm", "alert", "blink", "flashing", "troubleshoot"]):
         metadata["doc_type"] = "troubleshooting"
@@ -186,7 +299,7 @@ def upsert_source(cur, path: Path, content_hash: str, metadata: dict):
     return source_id, source_title, source_path
 
 
-def ingest_source(cur, path: Path, dry_run: bool = False) -> dict:
+def ingest_source(cur, path: Path, dry_run: bool = False, chunking_mode: str | None = None) -> dict:
     content = path.read_text(encoding="utf-8")
     normalized_content = normalize_text(content)
     if not normalized_content:
@@ -195,13 +308,13 @@ def ingest_source(cur, path: Path, dry_run: bool = False) -> dict:
     source_hash = sha256_text(normalized_content)
     source_metadata = {"source": path.relative_to(PROJECT_ROOT).as_posix(), "source_hash": source_hash}
     source_id, source_title, source_path = upsert_source(cur, path, source_hash, source_metadata)
-    chunks = build_chunks(normalized_content)
+    chunks = build_document_chunks(normalized_content, chunking_mode=chunking_mode)
 
     stats = {"source": source_path, "chunks": len(chunks), "inserted": 0, "skipped": 0, "deactivated": 0}
     active_hashes = []
 
     for chunk_index, chunk in enumerate(chunks):
-        chunk_hash = sha256_text(f"{source_id}:{chunk_index}:{chunk}")
+        chunk_hash = sha256_text(f"{source_id}:{chunk_index}:{chunk.text}")
         active_hashes.append(chunk_hash)
 
         cur.execute(
@@ -225,9 +338,9 @@ def ingest_source(cur, path: Path, dry_run: bool = False) -> dict:
             stats["inserted"] += 1
             continue
 
-        embedding = get_embedding(chunk)
+        embedding = get_embedding(chunk.text)
         embed_str = "[" + ",".join(map(str, embedding)) + "]"
-        metadata = parse_metadata(path, chunk)
+        metadata = parse_metadata(path, chunk.text, chunk)
         metadata.update({
             "chunk_hash": chunk_hash,
             "source_id": source_id,
@@ -254,7 +367,7 @@ def ingest_source(cur, path: Path, dry_run: bool = False) -> dict:
             """,
             (
                 source_id, source_title, source_path, chunk_index, chunk_hash,
-                chunk, embed_str, EMBED_MODEL, EMBED_DIM, json.dumps(metadata),
+                chunk.text, embed_str, EMBED_MODEL, EMBED_DIM, json.dumps(metadata),
             ),
         )
         stats["inserted"] += 1
@@ -302,6 +415,12 @@ def main():
     parser = argparse.ArgumentParser(description="Incrementally embed production documentation.")
     parser.add_argument("--rebuild", action="store_true", help="Deactivate existing chunks before ingesting current docs.")
     parser.add_argument("--dry-run", action="store_true", help="Scan files without embedding or writing chunks.")
+    parser.add_argument(
+        "--chunking-mode",
+        choices=sorted(SUPPORTED_CHUNKING_MODES),
+        default=CHUNKING_MODE if CHUNKING_MODE in SUPPORTED_CHUNKING_MODES else "hybrid",
+        help="Use 'hybrid' for Markdown section-aware recursive chunking or 'recursive' for the legacy splitter.",
+    )
     args = parser.parse_args()
 
     sources = discover_sources()
@@ -320,11 +439,11 @@ def main():
         active_source_ids = set()
         for path in sources:
             active_source_ids.add(source_id_for(path))
-            stats = ingest_source(cur, path, dry_run=args.dry_run)
+            stats = ingest_source(cur, path, dry_run=args.dry_run, chunking_mode=args.chunking_mode)
             for key in totals:
                 totals[key] += stats[key]
             print(
-                f"{stats['source']}: chunks={stats['chunks']} "
+                f"{stats['source']}: mode={args.chunking_mode} chunks={stats['chunks']} "
                 f"inserted={stats['inserted']} skipped={stats['skipped']} "
                 f"deactivated={stats['deactivated']}"
             )
