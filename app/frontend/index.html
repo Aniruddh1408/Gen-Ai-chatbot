@@ -122,6 +122,14 @@
             background-clip: content-box;
         }
 
+        .new-chat-btn {
+            width: 100%;
+            min-height: 54px;
+            background: linear-gradient(135deg, var(--accent), #7d8cff);
+            color: #fdfefe;
+            box-shadow: 0 16px 32px rgba(0, 183, 255, 0.2);
+        }
+
         .brand-card {
             position: relative;
             overflow: hidden;
@@ -181,6 +189,7 @@
             font-size: 0.98rem;
         }
 
+        .sessions-card,
         .assist-card,
         .tip-card {
             padding: 20px;
@@ -212,6 +221,78 @@
             display: flex;
             flex-direction: column;
             gap: 10px;
+        }
+
+        .session-list {
+            margin-top: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .session-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .session-item {
+            width: 100%;
+            min-height: 46px;
+            padding: 10px 12px;
+            border-radius: var(--radius-sm);
+            background: rgba(255, 255, 255, 0.035);
+            color: var(--text-soft);
+            border: 1px solid rgba(157, 191, 255, 0.08);
+            text-align: left;
+            font-size: 0.86rem;
+            font-weight: 600;
+            box-shadow: none;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .session-item.active {
+            border-color: rgba(103, 214, 255, 0.52);
+            background: rgba(103, 214, 255, 0.14);
+            color: var(--text-main);
+        }
+
+        .session-actions {
+            display: flex;
+            gap: 6px;
+        }
+
+        .session-action-btn {
+            min-width: 46px;
+            min-height: 34px;
+            padding: 0 9px;
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.035);
+            color: var(--text-muted);
+            border: 1px solid rgba(157, 191, 255, 0.08);
+            font-size: 0.72rem;
+            box-shadow: none;
+        }
+
+        .session-action-btn:hover,
+        .session-action-btn:focus {
+            color: var(--text-main);
+            border-color: rgba(103, 214, 255, 0.34);
+            outline: none;
+        }
+
+        .session-action-btn.delete {
+            color: #ffd6d6;
+            border-color: rgba(255, 123, 123, 0.14);
+        }
+
+        .session-empty {
+            color: var(--text-muted);
+            line-height: 1.5;
+            font-size: 0.86rem;
         }
 
         .assist-item {
@@ -253,7 +334,7 @@
         .workspace-header {
             display: flex;
             justify-content: space-between;
-            align-items: center;
+            align-items: flex-start;
             gap: 18px;
             padding: 26px 28px 20px;
         }
@@ -270,29 +351,13 @@
             max-width: 38rem;
         }
 
-        .status-cluster {
+        .header-actions {
             display: flex;
             align-items: center;
             gap: 10px;
             flex-wrap: wrap;
             justify-content: flex-end;
-        }
-
-        .status-pill {
-            display: inline-flex;
-            align-items: center;
-            gap: 10px;
-            padding: 10px 14px;
-            border-radius: 999px;
-            border: 1px solid rgba(103, 214, 255, 0.18);
-            background: rgba(103, 214, 255, 0.08);
-            color: var(--text-main);
-            font-size: 0.84rem;
-        }
-
-        .status-pill strong {
-            color: var(--accent);
-            font-weight: 700;
+            margin-left: auto;
         }
 
         .community-control {
@@ -501,6 +566,25 @@
             color: #ffffff;
         }
 
+        .message-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 14px;
+        }
+
+        .message-actions button,
+        .tool-btn {
+            min-height: 34px;
+            padding: 0 13px;
+            border-radius: 999px;
+            background: rgba(103, 214, 255, 0.12);
+            color: var(--accent);
+            border: 1px solid rgba(103, 214, 255, 0.16);
+            font-size: 0.78rem;
+            box-shadow: none;
+        }
+
         .typing {
             display: none;
             margin: 0 18px 16px;
@@ -580,7 +664,7 @@
 
         .input-area {
             display: grid;
-            grid-template-columns: minmax(0, 1fr) auto auto;
+            grid-template-columns: minmax(0, 1fr) auto auto auto;
             gap: 12px;
             align-items: stretch;
         }
@@ -733,13 +817,27 @@
                 grid-template-columns: 1fr;
             }
 
+            .session-row {
+                grid-template-columns: 1fr;
+            }
+
+            .session-actions {
+                justify-content: flex-end;
+            }
+
             #send-btn,
-            #cancel-btn {
+            #cancel-btn,
+            .tool-btn {
                 min-height: 52px;
             }
 
-            .status-cluster {
+            .header-actions {
                 justify-content: flex-start;
+                width: 100%;
+            }
+
+            .community-control {
+                width: 100%;
             }
         }
     </style>
@@ -752,6 +850,15 @@
                 <div class="eyebrow">Live Intelligence Console</div>
                 <h1>KuboCare AI</h1>
                 <p>Hybrid reasoning for resident analytics, clinical summaries, and device troubleshooting in one visible workspace.</p>
+            </section>
+
+            <button type="button" id="new-chat-btn" class="new-chat-btn">+ New Chat</button>
+
+            <section class="sessions-card">
+                <div class="section-title">Recent Chats <span>Local</span></div>
+                <div id="session-list" class="session-list">
+                    <p class="session-empty">No recent chats yet.</p>
+                </div>
             </section>
 
             <section class="assist-card">
@@ -784,7 +891,7 @@
                     <h2>Resident + Device Intelligence</h2>
                     <p>Ask naturally, inspect results clearly, and surface charts inline without leaving the conversation.</p>
                 </div>
-                <div class="status-cluster">
+                <div class="header-actions">
                     <label class="community-control" for="community-select">
                         <span>Local Community</span>
                         <select id="community-select" class="community-select">
@@ -793,9 +900,6 @@
                             <option value="3">Lotus Wellness Home</option>
                         </select>
                     </label>
-                    <div class="status-pill"><strong>DB</strong> Connected</div>
-                    <div class="status-pill"><strong>UX</strong> Real-time</div>
-                    <div class="status-pill"><strong>Session</strong> <span id="session-indicator">Live</span></div>
                 </div>
             </header>
 
@@ -837,11 +941,11 @@
             <form class="composer" id="chat-form">
                 <div class="composer-meta">
                     <span>Enter sends. Shift+Enter adds a new line.</span>
-                    <span>Session: <strong id="session-id-text">Ready</strong></span>
                 </div>
                 <div class="input-area">
                     <textarea id="user-input" rows="1"
                         placeholder="Ask about residents, health metrics, device alerts, or documentation..."></textarea>
+                    <button type="button" id="paste-btn" class="tool-btn">Paste</button>
                     <button type="submit" id="send-btn">Send</button>
                     <button type="button" id="cancel-btn" style="display: none;">Cancel</button>
                 </div>
@@ -856,10 +960,11 @@
         const typingIndicator = document.getElementById("typing-indicator");
         const sendBtn = document.getElementById("send-btn");
         const cancelBtn = document.getElementById("cancel-btn");
-        const sessionIndicator = document.getElementById("session-indicator");
-        const sessionIdText = document.getElementById("session-id-text");
         const promptSelect = document.getElementById("prompt-select");
         const communitySelect = document.getElementById("community-select");
+        const newChatBtn = document.getElementById("new-chat-btn");
+        const sessionList = document.getElementById("session-list");
+        const pasteBtn = document.getElementById("paste-btn");
 
         const communityNames = {
             1: "Green Valley Care",
@@ -872,12 +977,259 @@
             return communityNames[storedCommunityId] ? storedCommunityId : 1;
         }
 
-        let sessionId = localStorage.getItem("kubo_session_id") || "session_" + Date.now();
-        localStorage.setItem("kubo_session_id", sessionId);
         const communityId = getStoredCommunityId();
         localStorage.setItem("kubo_community_id", String(communityId));
-        sessionIndicator.textContent = sessionId.slice(-6).toUpperCase();
-        sessionIdText.textContent = sessionId.slice(-8);
+        const sessionStorageKey = `kubo_sessions_${communityId}`;
+
+        function createSessionId() {
+            return "session_" + Date.now();
+        }
+
+        let sessionId = localStorage.getItem("kubo_session_id") || createSessionId();
+        localStorage.setItem("kubo_session_id", sessionId);
+
+        function getStoredSessions() {
+            try {
+                const sessions = JSON.parse(localStorage.getItem(sessionStorageKey) || "[]");
+                return Array.isArray(sessions) ? sessions : [];
+            } catch (_error) {
+                return [];
+            }
+        }
+
+        function saveStoredSessions(sessions) {
+            localStorage.setItem(sessionStorageKey, JSON.stringify(sessions.slice(0, 8)));
+        }
+
+        const maxLocalHistoryTurns = 50;
+
+        function historyStorageKey(targetSessionId = sessionId) {
+            return `kubo_history_${communityId}_${targetSessionId}`;
+        }
+
+        function getLocalHistory(targetSessionId = sessionId) {
+            try {
+                const history = JSON.parse(localStorage.getItem(historyStorageKey(targetSessionId)) || "[]");
+                return Array.isArray(history) ? history.filter((turn) => turn && (turn.user || turn.ai)) : [];
+            } catch (_error) {
+                return [];
+            }
+        }
+
+        function saveLocalHistory(targetSessionId, history) {
+            const cleanHistory = Array.isArray(history)
+                ? history
+                    .filter((turn) => turn && (turn.user || turn.ai))
+                    .map((turn) => ({
+                        user: String(turn.user || ""),
+                        ai: String(turn.ai || "")
+                    }))
+                    .slice(-maxLocalHistoryTurns)
+                : [];
+            localStorage.setItem(historyStorageKey(targetSessionId), JSON.stringify(cleanHistory));
+        }
+
+        function appendLocalTurn(userText, aiText, targetSessionId = sessionId) {
+            const history = getLocalHistory(targetSessionId);
+            history.push({
+                user: String(userText || ""),
+                ai: String(aiText || "")
+            });
+            saveLocalHistory(targetSessionId, history);
+        }
+
+        function clearLocalHistory(targetSessionId) {
+            localStorage.removeItem(historyStorageKey(targetSessionId));
+        }
+
+        function sameTurn(left, right) {
+            return String(left?.user || "") === String(right?.user || "")
+                && String(left?.ai || "") === String(right?.ai || "");
+        }
+
+        function mergeHistories(localHistory, remoteHistory) {
+            const merged = Array.isArray(localHistory) ? [...localHistory] : [];
+            (Array.isArray(remoteHistory) ? remoteHistory : []).forEach((turn) => {
+                if (!merged.some((existing) => sameTurn(existing, turn))) {
+                    merged.push({
+                        user: String(turn.user || ""),
+                        ai: String(turn.ai || "")
+                    });
+                }
+            });
+            return merged.slice(-maxLocalHistoryTurns);
+        }
+
+        function sessionLabel(session) {
+            return session.title || `Chat ${session.id.slice(-6).toUpperCase()}`;
+        }
+
+        function normalizeSessionTitle(title) {
+            const trimmed = title.trim();
+            return trimmed ? trimmed.slice(0, 44) : "New chat";
+        }
+
+    function touchSession(title = "") {
+        const sessions = getStoredSessions();
+        const existing = sessions.find((item) => item.id === sessionId);
+
+        if (existing) {
+        // Only set title once, when it is still empty/default.
+        // Later prompts should not rename the chat.
+        if (title && (!existing.title || existing.title === "New chat")) {
+            existing.title = normalizeSessionTitle(title);
+        }
+
+        existing.updatedAt = Date.now();
+    } else {
+        sessions.unshift({
+            id: sessionId,
+            title: title ? normalizeSessionTitle(title) : "New chat",
+            updatedAt: Date.now()
+        });
+    }
+
+    sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+    saveStoredSessions(sessions);
+    renderSessionList();
+}
+
+        function renameSession(targetSessionId) {
+            const sessions = getStoredSessions();
+            const session = sessions.find((item) => item.id === targetSessionId);
+            if (!session) {
+                return;
+            }
+
+            const nextTitle = window.prompt("Rename chat", sessionLabel(session));
+            if (nextTitle === null) {
+                return;
+            }
+
+            session.title = normalizeSessionTitle(nextTitle);
+            session.updatedAt = Date.now();
+            sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+            saveStoredSessions(sessions);
+            renderSessionList();
+        }
+
+        async function clearRemoteSession(targetSessionId) {
+            try {
+                await fetch(`/history/${encodeURIComponent(targetSessionId)}?community_id=${communityId}`, {
+                    method: "DELETE"
+                });
+            } catch (_error) {
+                // Local deletion should still succeed if the server is offline.
+            }
+        }
+
+        async function deleteSession(targetSessionId) {
+            const sessions = getStoredSessions();
+            const session = sessions.find((item) => item.id === targetSessionId);
+            if (!session) {
+                return;
+            }
+
+            const confirmed = window.confirm(`Delete "${sessionLabel(session)}"? This clears its saved chat history.`);
+            if (!confirmed) {
+                return;
+            }
+
+            const remainingSessions = sessions.filter((item) => item.id !== targetSessionId);
+            saveStoredSessions(remainingSessions);
+            clearLocalHistory(targetSessionId);
+            await clearRemoteSession(targetSessionId);
+
+            if (targetSessionId !== sessionId) {
+                renderSessionList();
+                return;
+            }
+
+            if (currentAbortController) {
+                currentAbortController.abort();
+                resetLoadingState();
+            }
+
+            const nextSession = remainingSessions[0];
+            if (nextSession) {
+                await loadSession(nextSession.id);
+                return;
+            }
+
+            sessionId = createSessionId();
+            localStorage.setItem("kubo_session_id", sessionId);
+            renderSessionList();
+            renderWelcomeMessage();
+            userInput.value = "";
+            autoResizeInput();
+            userInput.focus();
+        }
+
+        function renderSessionList() {
+            const sessions = getStoredSessions();
+            sessionList.innerHTML = "";
+
+            if (!sessions.length) {
+                const empty = document.createElement("p");
+                empty.className = "session-empty";
+                empty.textContent = "No recent chats yet.";
+                sessionList.appendChild(empty);
+                return;
+            }
+
+            sessions.forEach((session) => {
+                const row = document.createElement("div");
+                row.className = "session-row";
+
+                const button = document.createElement("button");
+                button.type = "button";
+                button.className = `session-item${session.id === sessionId ? " active" : ""}`;
+                button.textContent = sessionLabel(session);
+                button.title = sessionLabel(session);
+                button.setAttribute("aria-label", `Open ${sessionLabel(session)}`);
+                button.addEventListener("click", () => loadSession(session.id));
+                row.appendChild(button);
+
+                const actions = document.createElement("div");
+                actions.className = "session-actions";
+
+                const renameBtn = document.createElement("button");
+                renameBtn.type = "button";
+                renameBtn.className = "session-action-btn";
+                renameBtn.textContent = "Rename";
+                renameBtn.setAttribute("aria-label", `Rename ${sessionLabel(session)}`);
+                renameBtn.addEventListener("click", () => renameSession(session.id));
+
+                const deleteBtn = document.createElement("button");
+                deleteBtn.type = "button";
+                deleteBtn.className = "session-action-btn delete";
+                deleteBtn.textContent = "Delete";
+                deleteBtn.setAttribute("aria-label", `Delete ${sessionLabel(session)}`);
+                deleteBtn.addEventListener("click", () => deleteSession(session.id));
+
+                actions.appendChild(renameBtn);
+                actions.appendChild(deleteBtn);
+                row.appendChild(actions);
+                sessionList.appendChild(row);
+            });
+        }
+
+        function renderWelcomeMessage() {
+            chatHistory.innerHTML = "";
+            addMessage("ai", "Welcome back. Ask about residents, health metrics, device alerts, or care documentation.", false, null, { skipSessionUpdate: true });
+        }
+
+        function renderStoredHistory(history) {
+            chatHistory.innerHTML = "";
+            history.forEach((turn) => {
+                if (turn.user) {
+                    addMessage("user", turn.user, false, null, { skipSessionUpdate: true });
+                }
+                if (turn.ai) {
+                    addMessage("ai", turn.ai, false, null, { skipSessionUpdate: true });
+                }
+            });
+        }
 
         if (communitySelect) {
             communitySelect.value = String(communityId);
@@ -921,7 +1273,41 @@
             }).join("");
         }
 
-        function addMessage(role, text, isError = false, chartData = null) {
+        function setTemporaryButtonText(button, text) {
+            const original = button.textContent;
+            button.textContent = text;
+            window.setTimeout(() => {
+                button.textContent = original;
+            }, 1400);
+        }
+
+        async function copyText(text, button = null) {
+            try {
+                await navigator.clipboard.writeText(text);
+                if (button) {
+                    setTemporaryButtonText(button, "Copied");
+                }
+            } catch (_error) {
+                if (button) {
+                    setTemporaryButtonText(button, "Copy failed");
+                }
+            }
+        }
+
+        function addMessageActions(container, role, text) {
+            const actions = document.createElement("div");
+            actions.className = "message-actions";
+
+            const copyBtn = document.createElement("button");
+            copyBtn.type = "button";
+            copyBtn.textContent = "Copy";
+            copyBtn.addEventListener("click", () => copyText(text, copyBtn));
+            actions.appendChild(copyBtn);
+
+            container.appendChild(actions);
+        }
+
+        function addMessage(role, text, isError = false, chartData = null, options = {}) {
             const msgDiv = document.createElement("div");
             msgDiv.className = `message ${role}${isError ? " error" : ""}`;
 
@@ -930,6 +1316,8 @@
                 <div class="message-meta">${meta}</div>
                 <div class="message-content">${renderMessageText(text)}</div>
             `;
+
+            addMessageActions(msgDiv, role, text);
 
             if (chartData && role === "ai") {
                 const chartWrapper = document.createElement("div");
@@ -982,6 +1370,10 @@
 
             chatHistory.appendChild(msgDiv);
             chatHistory.scrollTop = chatHistory.scrollHeight;
+
+            if (!options.skipSessionUpdate && role === "user") {
+                touchSession(text);
+            }
         }
 
         function resetLoadingState() {
@@ -996,11 +1388,72 @@
             userInput.style.height = `${Math.min(userInput.scrollHeight, 180)}px`;
         }
 
+        async function loadSession(nextSessionId) {
+            sessionId = nextSessionId;
+            localStorage.setItem("kubo_session_id", sessionId);
+            renderSessionList();
+
+            const localHistory = getLocalHistory(sessionId);
+            if (localHistory.length) {
+                renderStoredHistory(localHistory);
+            } else {
+                renderWelcomeMessage();
+            }
+
+            try {
+                const response = await fetch(`/history/${encodeURIComponent(sessionId)}?community_id=${communityId}`);
+                if (!response.ok) {
+                    throw new Error(`History request failed with ${response.status}`);
+                }
+                const data = await response.json();
+                if (data.error || !Array.isArray(data.history) || !data.history.length) {
+                    return;
+                }
+
+                const mergedHistory = mergeHistories(localHistory, data.history);
+                saveLocalHistory(sessionId, mergedHistory);
+                renderStoredHistory(mergedHistory);
+            } catch (_error) {
+                if (!localHistory.length) {
+                    addMessage("ai", "I couldn't load that chat history from the server. You can still continue in this chat.", true, null, { skipSessionUpdate: true });
+                }
+            }
+        }
+
+        function startNewChat() {
+            sessionId = createSessionId();
+            localStorage.setItem("kubo_session_id", sessionId);
+            touchSession("New chat");
+            renderWelcomeMessage();
+            userInput.value = "";
+            autoResizeInput();
+            userInput.focus();
+        }
+
         userInput.addEventListener("input", autoResizeInput);
         userInput.addEventListener("keydown", (event) => {
             if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
                 chatForm.requestSubmit();
+            }
+        });
+
+        newChatBtn.addEventListener("click", startNewChat);
+
+        pasteBtn.addEventListener("click", async () => {
+            try {
+                const text = await navigator.clipboard.readText();
+                if (!text) {
+                    setTemporaryButtonText(pasteBtn, "Empty");
+                    return;
+                }
+                const prefix = userInput.value && !userInput.value.endsWith(" ") ? " " : "";
+                userInput.value = `${userInput.value}${prefix}${text}`;
+                autoResizeInput();
+                userInput.focus();
+                setTemporaryButtonText(pasteBtn, "Pasted");
+            } catch (_error) {
+                setTemporaryButtonText(pasteBtn, "Blocked");
             }
         });
 
@@ -1056,6 +1509,7 @@
                     addMessage("ai", `Error: ${data.error}`, true);
                 } else {
                     addMessage("ai", data.answer, false, data.chart_data);
+                    appendLocalTurn(query, data.answer);
                     console.log("Trace ID:", data.trace_id);
                 }
             } catch (error) {
@@ -1068,6 +1522,8 @@
             }
         });
 
+        touchSession();
+        loadSession(sessionId);
         autoResizeInput();
     </script>
 </body>

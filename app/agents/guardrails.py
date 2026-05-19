@@ -68,6 +68,8 @@ _DOMAIN_KEYWORDS = [
     "yesterday", "today", "last hour", "last week", "month", "year",
     "list", "show", "find", "check", "get", "tell", "monitor", "help",
     "care", "needs", "need", "requires", "require", "context", "question", "follow", "mean",
+    "antibiotic", "cholesterol", "fever", "heart", "insulin", "medicine",
+    "stroke", "symptom", "symptoms", "tablet",
 ]
 _SHORT_GREETING_TERMS = ["hi", "hello", "hey", "help", "ankit", "i am"]
 
@@ -110,15 +112,25 @@ _DOMAIN_QUERY_PATTERNS = [
 ]
 _DOMAIN_QUERY_RE = re.compile("|".join(_DOMAIN_QUERY_PATTERNS), re.IGNORECASE)
 
+_GENERAL_MEDICAL_QUESTION_RE = re.compile(
+    r"\b(?:what\s+(?:is|are)|explain|define|meaning\s+of|how\s+(?:does|do)|"
+    r"why\s+(?:does|do|is|are)|side\s+effects?|uses?\s+of|benefits?\s+of|risks?\s+of)\b"
+    r".*\b(?:amlodipine|aspirin|atorvastatin|calcium|levothyroxine|metformin|"
+    r"multivitamin|paracetamol|salbutamol|telmisartan|antibiotic|inhaler|"
+    r"insulin|medicine|medication|tablet|arthritis|asthma|blood pressure|bp|"
+    r"cardiac|cardiovascular|cholesterol|diabetes|fever|glucose|heart|"
+    r"hypertension|osteoporosis|pre-diabetes|prediabetes|stroke|sugar|"
+    r"symptoms?|thyroid|vitals?)\b",
+    re.IGNORECASE,
+)
+
 
 def input_guardrail(query: str) -> bool:
     """
     Input guardrail.
     1. Block injection attempts.
-    2. Allow greetings and acknowledgements.
-    3. Allow resident lookups phrased with names.
-    4. Allow recognized domain keywords.
-    5. Block everything else.
+    2. Allow greetings, acknowledgements, KuboCare domain queries, and general chat.
+    3. Let the router decide whether the allowed query should use SQL, RAG, or normal chat.
     """
     if not query or not query.strip():
         return False
@@ -138,6 +150,9 @@ def input_guardrail(query: str) -> bool:
     if _RESIDENT_LOOKUP_RE.search(query_lower):
         return True
 
+    if _GENERAL_MEDICAL_QUESTION_RE.search(query_lower):
+        return True
+
     if _DOMAIN_QUERY_RE.search(query_lower):
         return True
 
@@ -148,8 +163,8 @@ def input_guardrail(query: str) -> bool:
         logger.info("Query allowed by documentation relevance", extra={"query": query})
         return True
 
-    logger.info("Query blocked: no domain keywords detected", extra={"query": query})
-    return False
+    logger.info("Query allowed by general chat fallback", extra={"query": query})
+    return True
 
 
 # ----------------------------

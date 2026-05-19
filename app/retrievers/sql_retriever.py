@@ -13,6 +13,7 @@ _SYNTHESIS_SYSTEM_PROMPT = """You are an Intelligent Clinical Data Summarizer.
 The following data was SUCCESSFULLY retrieved from the internal clinical database.
 Your task is to summarize this data for the attending physician.
 
+Your goal is to analyze the retrieved data and provide detailed, technical clinical insights. 
 STRICT RULES:
 1. You must answer using ONLY the data provided below.
 2. Be professional, clinical, and concise.
@@ -21,6 +22,13 @@ STRICT RULES:
 5. For simple list, detail, or value requests, answer only with the requested data.
 6. Formatting: If the user asks for a list or bullet points, use markdown bullets.
 7. Complete every sentence. If many rows are returned, use compact bullets instead of long prose.
+8. **DIRECT ANSWER**: Your FIRST priority is to answer the user's specific question. If they ask for a count, give the count. If they ask for a list, give the list.
+9. **DATA DRIVEN**: Focus purely on the data. Identify trends, anomalies, and correlations only if relevant to the query.
+10. **SIMPLE REQUESTS**: If the user is asking for a simple list or count, provide it directly and briefly. Do NOT force an anomaly analysis or start storytelling about individual residents.
+11. **NO GREETINGS**: Do not use greetings or conversational fillers.
+12. **UNIT CONVERSION**: Convert minutes to "7h 20m" style.
+13. **ANALYTICAL INSIGHT**: Only connect metrics if it directly answers the user's query or provides a significant warning.
+14. **CONTEXT**: Mention if values are above/below normal baselines
 """
 
 _SYNTHESIS_MAX_TOKENS = 320
@@ -28,16 +36,18 @@ _SYNTHESIS_MAX_TOKENS = 320
 _RESIDENT_PROFILE_RULES = [
     {
         "name": "age",
-        "patterns": [r"\bage\b", r"\bhow old\b", r"\bold is\b"],
+        "patterns": [r"\bage\b", r"\bages\b", r"\bhow old\b", r"\bold is\b", r"\bolder\b", r"\byounger\b"],
         "column": "residents.name, residents.age",
     },
     {
         "name": "flat_no",
         "patterns": [
             r"\bflat\b",
+            r"\bflats\b",
             r"\bflat no\b",
             r"\bflat number\b",
             r"\broom\b",
+            r"\brooms\b",
             r"\bwhere\s+(?:does|is)\b",
             r"\bstay\b",
             r"\bstaying\b",
@@ -54,7 +64,7 @@ _RESIDENT_PROFILE_RULES = [
     },
     {
         "name": "medical_intake",
-        "patterns": [r"\bprescribed\b", r"\bintake\b", r"\bmedication\b", r"\btreatment plan\b"],
+        "patterns": [r"\bprescribed\b", r"\bintake\b", r"\bmedication\b", r"\bmedications\b", r"\btreatment plan\b"],
         "column": "residents.name, residents.medical_intake_prescribed",
     },
     {
@@ -104,6 +114,9 @@ _RESIDENT_LIST_METRIC_TERMS = {
     "prescribed",
     "detail",
     "details",
+    "health",
+    "metric",
+    "metrics",
     "bp",
     "blood pressure",
     "sugar",
@@ -371,6 +384,7 @@ _CARE_ASSESSMENT_KEYWORDS = [
     "comprehensive",
     "needs care",
     "need care",
+    "needing care",
     "prioritize",
     "risk",
     "risks",
@@ -447,6 +461,7 @@ _HIGH_RISK_CARE_PHRASES = [
     "highest priority",
     "needs care",
     "need care",
+    "needing care",
     "requires care",
     "require care",
     "requires more care",
@@ -554,9 +569,14 @@ _RESIDENT_NAME_STOPWORDS = {
     "these", "those", "all", "their", "his", "her", "him", "them", "who",
     "what", "which", "where", "when", "why", "how", "is", "are", "was",
     "were", "the", "a", "an", "has", "have", "with",
+    "and", "or",
+    "list", "show", "display", "give", "get", "tell", "on", "takes", "taking",
     "above", "below", "over", "under", "less", "more", "greater", "fewer",
     "medical", "history", "medication", "prescribed", "details", "room",
     "rooms", "flat", "flats", "age", "ages",
+    "bp", "blood", "pressure", "sugar", "glucose", "level", "levels",
+    "steps", "step", "sleep", "score", "scores", "quality", "duration",
+    "chart", "graph", "pie", "bar", "line",
 }
 
 _RESIDENT_TEXT_SEARCH_RULES = [
@@ -645,6 +665,42 @@ _RESIDENT_TEXT_SEARCH_RULES = [
         "columns": ["r.medical_intake_prescribed"],
         "terms": ["levothyroxine"],
     },
+    {
+        "label": "Salbutamol inhaler",
+        "patterns": [r"\bsalbutamol\b", r"\binhaler\b"],
+        "columns": ["r.medical_intake_prescribed"],
+        "terms": ["salbutamol", "inhaler"],
+    },
+    {
+        "label": "Paracetamol",
+        "patterns": [r"\bparacetamol\b"],
+        "columns": ["r.medical_intake_prescribed"],
+        "terms": ["paracetamol"],
+    },
+    {
+        "label": "Telmisartan",
+        "patterns": [r"\btelmisartan\b"],
+        "columns": ["r.medical_intake_prescribed"],
+        "terms": ["telmisartan"],
+    },
+    {
+        "label": "Aspirin",
+        "patterns": [r"\baspirin\b"],
+        "columns": ["r.medical_intake_prescribed"],
+        "terms": ["aspirin"],
+    },
+    {
+        "label": "diet and exercise plan",
+        "patterns": [r"\bdiet\b", r"\bexercise plan\b", r"\blifestyle monitoring\b"],
+        "columns": ["r.health_medical_history", "r.medical_intake_prescribed"],
+        "terms": ["diet", "exercise plan", "lifestyle monitoring"],
+    },
+    {
+        "label": "no major chronic illness",
+        "patterns": [r"\bno major chronic illness\b", r"\bno major illness\b"],
+        "columns": ["r.health_medical_history"],
+        "terms": ["no major chronic illness", "no major illness"],
+    },
 ]
 
 _THRESHOLD_PATTERNS = [
@@ -711,6 +767,93 @@ _METRIC_THRESHOLD_RULES = [
     },
 ]
 
+_QUALITATIVE_THRESHOLD_RULES = [
+    {
+        "patterns": [r"\b(?:high|elevated|raised)\s+(?:bp|blood pressure)\b", r"\b(?:bp|blood pressure)\s+(?:is\s+)?(?:high|elevated|raised)\b"],
+        "plan": {
+            "metric": "bp",
+            "label": "high blood pressure",
+            "kind": "health",
+            "column": "h.bp_systolic",
+            "value_column": "h.bp_systolic",
+            "operator": ">=",
+            "value": 140,
+            "unit": " mmHg",
+            "bp_any_thresholds": [("h.bp_systolic", 140), ("h.bp_diastolic", 90)],
+            "comparison_text": "high blood pressure (systolic >= 140 or diastolic >= 90)",
+        },
+    },
+    {
+        "patterns": [r"\b(?:low)\s+(?:bp|blood pressure)\b", r"\b(?:bp|blood pressure)\s+(?:is\s+)?low\b"],
+        "plan": {
+            "metric": "bp",
+            "label": "low blood pressure",
+            "kind": "health",
+            "column": "h.bp_systolic",
+            "value_column": "h.bp_systolic",
+            "operator": "<",
+            "value": 90,
+            "unit": " mmHg",
+            "bp_any_thresholds": [("h.bp_systolic", 90), ("h.bp_diastolic", 60)],
+            "comparison_text": "low blood pressure (systolic < 90 or diastolic < 60)",
+        },
+    },
+    {
+        "patterns": [r"\b(?:high|elevated|raised)\s+(?:sugar|glucose)\b", r"\b(?:sugar|glucose)\s+(?:is\s+)?(?:high|elevated|raised)\b"],
+        "plan": {
+            "metric": "sugar",
+            "label": "sugar level",
+            "kind": "health",
+            "column": "h.sugar_level",
+            "value_column": "h.sugar_level",
+            "operator": ">=",
+            "value": 140,
+            "unit": "",
+        },
+    },
+    {
+        "patterns": [r"\b(?:low|poor)\s+(?:sleep score|sleep quality|sleep quality score)\b"],
+        "plan": {
+            "metric": "sleep_quality",
+            "label": "sleep quality score",
+            "kind": "sleep",
+            "column": "s.sleep_quality_score",
+            "value_column": "s.sleep_quality_score",
+            "operator": "<",
+            "value": 50,
+            "unit": "",
+        },
+    },
+    {
+        "patterns": [r"\b(?:low|poor)\s+(?:activity|steps|step count)\b", r"\b(?:inactive|low activity)\b"],
+        "plan": {
+            "metric": "steps",
+            "label": "step count",
+            "kind": "activity",
+            "column": "a.steps_count",
+            "value_column": "a.steps_count",
+            "operator": "<",
+            "value": 2500,
+            "unit": " steps",
+        },
+    },
+    {
+        "patterns": [r"\b(?:short|low|reduced)\s+sleep(?:\s+duration|\s+time)?\b"],
+        "plan": {
+            "metric": "sleep_duration",
+            "label": "sleep duration",
+            "kind": "sleep",
+            "column": "s.sleep_duration_minutes",
+            "value_column": "s.sleep_duration_minutes",
+            "operator": "<",
+            "value": 360,
+            "unit": " minutes",
+        },
+    },
+]
+
+_VISUAL_KEYWORDS = ["chart", "graph", "plot", "visualize", "visualization", "show stats", "comparison", "pie", "bar chart", "line graph", "doughnut", "donut"]
+
 
 def _is_plausible_resident_name(candidate: str) -> bool:
     words = [word.strip(" .,?!():'\"").lower() for word in candidate.split()]
@@ -718,6 +861,17 @@ def _is_plausible_resident_name(candidate: str) -> bool:
     if len(words) < 2:
         return False
     if any(word in _RESIDENT_NAME_STOPWORDS for word in words):
+        return False
+    return True
+
+
+def _is_plausible_resident_name_fragment(candidate: str) -> bool:
+    words = [word.strip(" .,?!():'\"").lower() for word in candidate.split()]
+    words = [word for word in words if word]
+    if len(words) != 1:
+        return False
+    word = words[0]
+    if len(word) < 2 or word in _RESIDENT_NAME_STOPWORDS:
         return False
     return True
 
@@ -764,6 +918,41 @@ def _extract_resident_name(query: str) -> str | None:
     return None
 
 
+def _extract_resident_name_fragment(query: str) -> str | None:
+    q = query.lower().replace("’", "'").strip()
+    profile_tail = (
+        r"details?|profile|info|information|age|old|room|flat|"
+        r"medical history|health history|history|medication|prescribed|intake|treatment"
+    )
+    metric_tail = (
+        r"age|old|room|flat|medical history|health history|history|"
+        r"medication|prescribed|intake|treatment"
+    )
+    patterns = [
+        rf"\b(?:h?ow\s+old\s+is|(?:what\s+is\s+)?(?:the\s+)?age\s+of)\s+"
+        rf"(?:resident\s+|patient\s+)?([a-z]+)\b",
+        rf"\b(?:what|which)\s+(?:flat|room)(?:\s+(?:number|no))?\s+(?:is|does)\s+"
+        rf"(?:resident\s+|patient\s+)?([a-z]+)(?:\s+(?:in|have|has))?\b",
+        rf"\b(?:give|show|display|get|tell)\b(?:\s+me)?(?:\s+the)?\s+(?:{profile_tail})\s+"
+        rf"(?:of|for|about)\s+(?:resident\s+|patient\s+)?([a-z]+)\b",
+        rf"\b(?:{profile_tail})\s+(?:of|for|about)\s+(?:resident\s+|patient\s+)?([a-z]+)\b",
+        rf"\b(?:what\s+is|what's|where\s+(?:does|is))\s+(?:resident\s+|patient\s+)?"
+        rf"([a-z]+)(?:'s)?\s+(?:{metric_tail})\b",
+        rf"\b([a-z]+)\s+(?:{profile_tail})\b",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, q)
+        if match:
+            candidate = match.group(1).strip(" .,?!")
+            if (
+                candidate not in _NON_RESIDENT_NAME_CANDIDATES
+                and _is_plausible_resident_name_fragment(candidate)
+            ):
+                return candidate.title()
+    return None
+
+
 def _extract_resident_id(query: str) -> int | None:
     q = query.lower().strip()
     if not re.search(r"\b(?:resident|patient)\b", q):
@@ -782,38 +971,47 @@ def _extract_resident_id(query: str) -> int | None:
     return None
 
 
-def _detect_resident_profile_plan(query: str) -> dict | None:
+def _resident_profile_rule_for_query(query: str) -> dict | None:
     q_lower = query.lower()
     if _has_ranking_request(q_lower):
         return None
 
+    for rule in _RESIDENT_PROFILE_RULES:
+        if any(re.search(pattern, q_lower) for pattern in rule["patterns"]):
+            return rule
+    return None
+
+
+def _detect_resident_profile_plan(query: str) -> dict | None:
+    q_lower = query.lower()
+    rule = _resident_profile_rule_for_query(query)
+    if not rule:
+        return None
+
     resident_id = _extract_resident_id(query)
-    resident_name = _extract_resident_name(query)
+    resident_name = _extract_resident_name(query) or _extract_resident_name_fragment(query)
     if resident_id is None and resident_name is None and _is_resident_collection_query(q_lower):
         return None
 
-    for rule in _RESIDENT_PROFILE_RULES:
-        if any(re.search(pattern, q_lower) for pattern in rule["patterns"]):
-            if resident_id is not None:
-                return {
-                    "table": "residents",
-                    "column": rule["column"],
-                    "filters": [{"column": "residents.id", "operator": "=", "value": resident_id}],
-                    "limit": 1,
-                    "_profile_field": rule["name"],
-                }
+    if resident_id is not None:
+        return {
+            "table": "residents",
+            "column": rule["column"],
+            "filters": [{"column": "residents.id", "operator": "=", "value": resident_id}],
+            "limit": 1,
+            "_profile_field": rule["name"],
+        }
 
-            if not resident_name:
-                return None
+    if not resident_name:
+        return None
 
-            return {
-                "table": "residents",
-                "column": rule["column"],
-                "filters": [{"column": "residents.name", "operator": "=", "value": resident_name}],
-                "limit": 1,
-                "_profile_field": rule["name"],
-            }
-    return None
+    return {
+        "table": "residents",
+        "column": rule["column"],
+        "filters": [{"column": "residents.name", "operator": "=", "value": resident_name}],
+        "limit": 1,
+        "_profile_field": rule["name"],
+    }
 
 
 def _format_resident_profile_answer(profile_field: str, result: list[tuple]) -> str | None:
@@ -841,19 +1039,23 @@ def _format_resident_profile_answer(profile_field: str, result: list[tuple]) -> 
             age = row[3]
             history = row[4]
             medication = row[5]
-            id_text = f"ID {resident_id}, " if resident_id is not None else ""
         else:
+            resident_id = None
             flat_no = row[1] if len(row) > 1 else None
             age = row[2] if len(row) > 2 else None
             history = row[3] if len(row) > 3 else None
             medication = row[4] if len(row) > 4 else None
-            id_text = ""
         age_text = f"{age} years" if age is not None else "age not recorded"
-        return (
-            f"{resident_name} ({id_text}{flat_no or 'room not recorded'}, {age_text}). "
-            f"Medical history: {history or 'not recorded'}. "
-            f"Prescribed medication: {medication or 'not recorded'}."
-        )
+        lines = [f"Name: {resident_name}"]
+        if resident_id is not None:
+            lines.append(f"ID: {resident_id}")
+        lines.extend([
+            f"Room: {flat_no or 'room not recorded'}",
+            f"Age: {age_text}",
+            f"Medical history: {history or 'not recorded'}",
+            f"Prescribed medication: {medication or 'not recorded'}",
+        ])
+        return "\n".join(lines)
 
     if field_value in (None, ""):
         return f"I couldn't find {profile_field.replace('_', ' ')} for {resident_name} in the database."
@@ -869,9 +1071,353 @@ def _format_resident_profile_answer(profile_field: str, result: list[tuple]) -> 
     return None
 
 
+def _match_resident_names_in_query(query: str, resident_names: list[str]) -> list[str]:
+    q_lower = query.lower().replace("â€™", "'")
+    matches: dict[str, int] = {}
+    resident_names = [name for name in resident_names if name]
+
+    for resident_name in resident_names:
+        escaped_name = re.escape(resident_name.lower())
+        match = re.search(rf"(?<!\w){escaped_name}(?:'s)?(?!\w)", q_lower)
+        if match:
+            matches[resident_name] = match.start()
+
+    first_name_to_residents: dict[str, list[str]] = {}
+    for resident_name in resident_names:
+        first_name = resident_name.split()[0].lower()
+        first_name_to_residents.setdefault(first_name, []).append(resident_name)
+
+    for first_name, names in first_name_to_residents.items():
+        if len(names) != 1:
+            continue
+        resident_name = names[0]
+        if resident_name in matches:
+            continue
+        match = re.search(rf"(?<!\w){re.escape(first_name)}(?:'s)?(?!\w)", q_lower)
+        if match:
+            matches[resident_name] = match.start()
+
+    return [
+        name
+        for name, _position in sorted(matches.items(), key=lambda item: (item[1], item[0]))
+    ]
+
+
+def _find_resident_names_in_query(query: str, community_id: int) -> list[str]:
+    rows = run_query(
+        """
+        SELECT name
+        FROM residents
+        WHERE community_id = %s
+        ORDER BY LENGTH(name) DESC;
+        """,
+        (community_id,),
+    )
+    resident_names = [str(row[0]).strip() for row in rows if row and row[0]]
+    return _match_resident_names_in_query(query, resident_names)
+
+
+def _format_multi_resident_profile_answer(profile_field: str, result: list[tuple], query: str = "") -> str:
+    if not result:
+        return "I couldn't find those residents in this community."
+
+    if profile_field == "details":
+        lines = ["Resident details:"]
+        for row in result:
+            if len(row) >= 6:
+                name, resident_id, flat_no, age, history, medication = row[:6]
+                id_text = f"ID {resident_id}, " if resident_id is not None else ""
+            else:
+                name = row[0] if len(row) > 0 else "Unnamed resident"
+                flat_no = row[1] if len(row) > 1 else None
+                age = row[2] if len(row) > 2 else None
+                history = row[3] if len(row) > 3 else None
+                medication = row[4] if len(row) > 4 else None
+                id_text = ""
+            age_text = f"{age} years" if age is not None else "age not recorded"
+            lines.append(
+                f"- {name} ({id_text}{flat_no or 'room not recorded'}, {age_text}): "
+                f"medical history: {history or 'not recorded'}; "
+                f"prescribed medication: {medication or 'not recorded'}."
+            )
+        return "\n".join(lines)
+
+    if profile_field == "name":
+        lines = ["Resident names:"]
+        for row in result:
+            name = row[0] if len(row) > 0 else "Unnamed resident"
+            resident_id = row[1] if len(row) > 1 else None
+            lines.append(f"- {name} (ID {resident_id})" if resident_id is not None else f"- {name}")
+        return "\n".join(lines)
+
+    labels = {
+        "age": "Resident ages:",
+        "flat_no": "Resident rooms:",
+        "medical_history": "Resident medical histories:",
+        "medical_intake": "Resident prescribed medications:",
+    }
+    lines = [labels.get(profile_field, "Resident details:")]
+    if profile_field == "age":
+        q_lower = query.lower()
+        age_rows = [
+            (str(row[0]), _to_float(row[1]))
+            for row in result
+            if len(row) > 1 and _to_float(row[1]) is not None
+        ]
+        if age_rows and re.search(r"\b(?:older|oldest|elder|eldest)\b", q_lower):
+            name, age = max(age_rows, key=lambda item: (item[1], item[0]))
+            lines.append(f"{name} is older among the requested residents at {_metric_text(int(age))} years.")
+        elif age_rows and re.search(r"\b(?:younger|youngest)\b", q_lower):
+            name, age = min(age_rows, key=lambda item: (item[1], item[0]))
+            lines.append(f"{name} is younger among the requested residents at {_metric_text(int(age))} years.")
+    for row in result:
+        name = row[0] if len(row) > 0 else "Unnamed resident"
+        value = row[1] if len(row) > 1 else None
+        if profile_field == "age":
+            value_text = f"{value} years" if value is not None else "not recorded"
+        else:
+            value_text = str(value) if value not in (None, "") else "not recorded"
+        lines.append(f"- {name}: {value_text}")
+    return "\n".join(lines)
+
+
+def _run_multi_resident_profile(query: str, community_id: int) -> dict | None:
+    if _is_care_assessment_query(query):
+        return None
+
+    rule = _resident_profile_rule_for_query(query)
+    if not rule:
+        return None
+
+    resident_names = _find_resident_names_in_query(query, community_id)
+    if len(resident_names) < 2:
+        return None
+
+    name_conditions = " OR ".join(["residents.name ILIKE %s" for _name in resident_names])
+    sql = (
+        f"SELECT {rule['column']} FROM residents "
+        f"WHERE residents.community_id = %s AND ({name_conditions}) "
+        "ORDER BY residents.flat_no, residents.name "
+        f"LIMIT {len(resident_names)}"
+    )
+    params = [community_id] + [f"%{name}%" for name in resident_names]
+    result = run_query(sql, params)
+
+    return {
+        "query": query,
+        "plan": {
+            "_macro": "multi_resident_profile",
+            "_profile_field": rule["name"],
+            "resident_names": resident_names,
+        },
+        "sql": sql,
+        "result": result,
+        "answer": _format_multi_resident_profile_answer(rule["name"], result, query),
+    }
+
+
+def _detect_resident_metric_from_query(query: str) -> str | None:
+    q_lower = query.lower()
+    for metric, terms in _NAMED_RESIDENT_METRIC_TERMS:
+        if any(term in q_lower for term in terms):
+            return metric
+    if any(term in q_lower for term in ["compare", "comparison", "versus", " vs "]):
+        return "all_metrics"
+    return None
+
+
+def _multi_metric_comparison_line(metric: str, result: list[tuple], query: str) -> str | None:
+    q_lower = query.lower()
+    wants_low = re.search(r"\b(?:lower|lowest|less|least|fewer|fewest|worse|worst|shorter|shortest)\b", q_lower)
+    wants_high = re.search(r"\b(?:higher|highest|more|most|better|best|longer|longest)\b", q_lower)
+    if not wants_low and not wants_high:
+        return None
+
+    metric_config = {
+        "bp": ("blood pressure", lambda row: (_to_float(row[2]) or 0, _to_float(row[3]) or 0), lambda row: f"{row[2]}/{row[3]} mmHg"),
+        "sugar": ("sugar level", lambda row: _to_float(row[4]), lambda row: f"{row[4]}"),
+        "steps": ("step count", lambda row: _to_float(row[5]), lambda row: f"{row[5]} steps"),
+        "sleep_quality": ("sleep quality score", lambda row: _to_float(row[7]), lambda row: f"{row[7]}"),
+        "sleep_duration": ("sleep duration", lambda row: _to_float(row[6]), lambda row: _format_sleep_duration(row[6])),
+        "sleep": ("sleep quality score", lambda row: _to_float(row[7]), lambda row: f"{row[7]}"),
+    }
+    config = metric_config.get(metric)
+    if not config:
+        return None
+
+    label, value_getter, value_formatter = config
+    comparable_rows = [
+        row for row in result
+        if value_getter(row) is not None
+    ]
+    if not comparable_rows:
+        return None
+
+    reverse = bool(wants_high and not wants_low)
+    selected = sorted(comparable_rows, key=lambda row: (value_getter(row), str(row[0])), reverse=reverse)[0]
+    direction_text = "higher" if reverse else "lower"
+    if metric == "sleep" and wants_low:
+        direction_text = "worse"
+    elif metric == "sleep" and wants_high:
+        direction_text = "better"
+    return (
+        f"Among the requested residents, {selected[0]} has the {direction_text} "
+        f"{label}: {value_formatter(selected)}."
+    )
+
+
+def _format_multi_resident_metric_answer(metric: str, result: list[tuple], query: str = "") -> str:
+    if not result:
+        return "I couldn't find metric records for those residents in this community."
+
+    if metric == "bp":
+        lines = ["Requested resident blood pressure readings:"]
+        comparison_line = _multi_metric_comparison_line(metric, result, query)
+        if comparison_line:
+            lines.append(comparison_line)
+        for name, flat_no, systolic, diastolic, *_rest in result:
+            bp_text = f"{systolic}/{diastolic} mmHg" if systolic is not None and diastolic is not None else "not recorded"
+            lines.append(f"- {name} ({flat_no or 'room not recorded'}): {bp_text}")
+        return "\n".join(lines)
+
+    if metric == "sugar":
+        lines = ["Requested resident sugar levels:"]
+        comparison_line = _multi_metric_comparison_line(metric, result, query)
+        if comparison_line:
+            lines.append(comparison_line)
+        for name, flat_no, _systolic, _diastolic, sugar, *_rest in result:
+            sugar_text = f"{sugar}" if sugar is not None else "not recorded"
+            lines.append(f"- {name} ({flat_no or 'room not recorded'}): {sugar_text}")
+        return "\n".join(lines)
+
+    if metric == "steps":
+        lines = ["Requested resident step counts:"]
+        comparison_line = _multi_metric_comparison_line(metric, result, query)
+        if comparison_line:
+            lines.append(comparison_line)
+        for name, flat_no, _systolic, _diastolic, _sugar, steps, *_rest in result:
+            steps_text = f"{steps} steps" if steps is not None else "not recorded"
+            lines.append(f"- {name} ({flat_no or 'room not recorded'}): {steps_text}")
+        return "\n".join(lines)
+
+    if metric == "sleep_quality":
+        lines = ["Requested resident sleep quality scores:"]
+        comparison_line = _multi_metric_comparison_line(metric, result, query)
+        if comparison_line:
+            lines.append(comparison_line)
+        for name, flat_no, _systolic, _diastolic, _sugar, _steps, _duration, score in result:
+            score_text = f"{score}" if score is not None else "not recorded"
+            lines.append(f"- {name} ({flat_no or 'room not recorded'}): {score_text}")
+        return "\n".join(lines)
+
+    if metric == "sleep_duration":
+        lines = ["Requested resident sleep durations:"]
+        comparison_line = _multi_metric_comparison_line(metric, result, query)
+        if comparison_line:
+            lines.append(comparison_line)
+        for name, flat_no, _systolic, _diastolic, _sugar, _steps, duration, _score in result:
+            duration_text = _format_sleep_duration(duration)
+            lines.append(f"- {name} ({flat_no or 'room not recorded'}): {duration_text}")
+        return "\n".join(lines)
+
+    if metric == "sleep":
+        lines = ["Requested resident sleep metrics:"]
+        comparison_line = _multi_metric_comparison_line(metric, result, query)
+        if comparison_line:
+            lines.append(comparison_line)
+        for name, flat_no, _systolic, _diastolic, _sugar, _steps, duration, score in result:
+            duration_text = _format_sleep_duration(duration, "duration not recorded")
+            score_text = f"score {score}" if score is not None else "score not recorded"
+            lines.append(f"- {name} ({flat_no or 'room not recorded'}): {duration_text}; {score_text}.")
+        return "\n".join(lines)
+
+    lines = ["Requested resident health metrics:"]
+    for row in result:
+        name, flat_no, systolic, diastolic, sugar, steps, sleep_duration, sleep_score = row
+        bp_text = f"{systolic}/{diastolic} mmHg" if systolic is not None and diastolic is not None else "BP not recorded"
+        sugar_text = f"sugar {sugar}" if sugar is not None else "sugar not recorded"
+        steps_text = f"steps {steps}" if steps is not None else "steps not recorded"
+        sleep_text = (
+            f"sleep {_format_sleep_duration(sleep_duration, 'duration not recorded')}, score {sleep_score}"
+            if sleep_duration is not None or sleep_score is not None
+            else "sleep not recorded"
+        )
+        lines.append(f"- {name} ({flat_no or 'room not recorded'}): {bp_text}; {sugar_text}; {steps_text}; {sleep_text}.")
+    return "\n".join(lines)
+
+
+def _run_multi_resident_metric(query: str, community_id: int) -> dict | None:
+    metric = _detect_resident_metric_from_query(query)
+    if not metric:
+        return None
+
+    resident_names = _find_resident_names_in_query(query, community_id)
+    if len(resident_names) < 2:
+        return None
+
+    name_conditions = " OR ".join(["r.name ILIKE %s" for _name in resident_names])
+    sql = f"""
+    WITH target_residents AS (
+        SELECT id, name, flat_no, age, health_medical_history, medical_intake_prescribed
+        FROM residents r
+        WHERE r.community_id = %s
+          AND ({name_conditions})
+    ),
+    latest_health AS (
+        SELECT DISTINCT ON (resident_id)
+            resident_id, bp_systolic, bp_diastolic, sugar_level, recorded_at
+        FROM health_reports
+        ORDER BY resident_id, recorded_at DESC
+    ),
+    latest_activity AS (
+        SELECT DISTINCT ON (resident_id)
+            resident_id, steps_count, recorded_at
+        FROM activity_metrics
+        ORDER BY resident_id, recorded_at DESC
+    ),
+    latest_sleep AS (
+        SELECT DISTINCT ON (resident_id)
+            resident_id, sleep_duration_minutes, sleep_quality_score, recorded_at
+        FROM sleep_analytics
+        ORDER BY resident_id, recorded_at DESC
+    )
+    SELECT
+        r.name,
+        r.flat_no,
+        h.bp_systolic,
+        h.bp_diastolic,
+        h.sugar_level,
+        a.steps_count,
+        s.sleep_duration_minutes,
+        s.sleep_quality_score
+    FROM target_residents r
+    LEFT JOIN latest_health h ON r.id = h.resident_id
+    LEFT JOIN latest_activity a ON r.id = a.resident_id
+    LEFT JOIN latest_sleep s ON r.id = s.resident_id
+    ORDER BY r.flat_no, r.name;
+    """
+    params = [community_id] + [f"%{name}%" for name in resident_names]
+    result = run_query(sql, params)
+
+    return {
+        "query": query,
+        "plan": {
+            "_macro": "multi_resident_metric",
+            "_metric": metric,
+            "resident_names": resident_names,
+        },
+        "sql": sql,
+        "result": result,
+        "answer": _format_multi_resident_metric_answer(metric, result, query),
+    }
+
+
 def _detect_resident_list_plan(query: str) -> dict | None:
     q_lower = query.lower().strip()
     if not any(re.search(pattern, q_lower) for pattern in _RESIDENT_LIST_PATTERNS):
+        return None
+
+    if _detect_resident_text_search_plan(query):
         return None
 
     if any(term in q_lower for term in _RESIDENT_LIST_METRIC_TERMS):
@@ -893,13 +1439,13 @@ def _format_resident_list_answer(result: list[tuple]) -> str:
         return "I couldn't find residents in this community."
 
     lines = ["Residents in this community:"]
-    for row in result:
+    for index, row in enumerate(result, start=1):
         resident_name = str(row[0]).strip() if len(row) > 0 and row[0] is not None else "Unnamed resident"
         flat_no = str(row[1]).strip() if len(row) > 1 and row[1] is not None else ""
         if flat_no:
-            lines.append(f"- {resident_name} ({flat_no})")
+            lines.append(f"{index}. {resident_name} ({flat_no})")
         else:
-            lines.append(f"- {resident_name}")
+            lines.append(f"{index}. {resident_name}")
     return "\n".join(lines)
 
 
@@ -941,7 +1487,11 @@ def _detect_resident_aggregate_plan(query: str) -> dict | None:
     if not has_resident_scope and not age_rank_type and not age_average_requested:
         return None
 
-    if any(term in q_lower for term in ["how many", "count", "number of", "total"]):
+    if (
+        re.search(r"\b(?:how many|number of|total)\s+(?:residents|patients)\b", q_lower)
+        or re.search(r"\b(?:resident|patient)s?\s+count\b", q_lower)
+        or re.search(r"\bcount\s+(?:of\s+)?(?:residents|patients)\b", q_lower)
+    ):
         return {"_macro": "resident_aggregate", "_aggregate": "count"}
 
     if age_average_requested:
@@ -1133,7 +1683,7 @@ def _format_resident_collection_profile_answer(plan: dict, result: list[tuple]) 
 
 def _detect_resident_metric_summary_plan(query: str) -> dict | None:
     q_lower = query.lower().strip()
-    if not _is_resident_collection_query(q_lower):
+    if not _is_resident_collection_query(q_lower) and not _is_visual_request(query):
         return None
 
     if _has_ranking_request(q_lower):
@@ -1181,6 +1731,9 @@ def _run_resident_average_metric(plan: dict, community_id: int) -> dict:
     elif plan.get("metric") == "bp":
         systolic, diastolic = result[0]
         answer = f"The average blood pressure in this community is {systolic}/{diastolic} mmHg."
+    elif plan.get("metric") == "sleep_duration":
+        value = result[0][0]
+        answer = f"The average {label} in this community is {_format_sleep_duration(value)}."
     else:
         value = result[0][0]
         answer = f"The average {label} in this community is {value}{suffix}."
@@ -1202,6 +1755,10 @@ def _detect_resident_text_search_plan(query: str) -> dict | None:
     )
     if not has_lookup_shape:
         return None
+
+    for rule in _RESIDENT_TEXT_SEARCH_RULES:
+        if rule.get("label") == "pre-diabetes" and any(re.search(pattern, q_lower) for pattern in rule["patterns"]):
+            return {"_macro": "resident_text_search", **rule}
 
     for rule in _RESIDENT_TEXT_SEARCH_RULES:
         if any(re.search(pattern, q_lower) for pattern in rule["patterns"]):
@@ -1286,13 +1843,23 @@ def _extract_threshold(query: str) -> dict | None:
 
 
 def _detect_metric_threshold_plan(query: str) -> dict | None:
+    q_lower = query.lower()
+    for rule in _QUALITATIVE_THRESHOLD_RULES:
+        if any(re.search(pattern, q_lower) for pattern in rule["patterns"]):
+            return {"_macro": "metric_threshold", **rule["plan"]}
+
     threshold = _extract_threshold(query)
     if not threshold:
         return None
 
-    q_lower = query.lower()
     for rule in _METRIC_THRESHOLD_RULES:
         if any(re.search(pattern, q_lower) for pattern in rule["patterns"]):
+            if rule.get("metric") == "sleep_duration" and re.search(r"\bhours?\b", q_lower):
+                threshold = dict(threshold)
+                threshold["value"] = int(float(threshold["value"]) * 60)
+                threshold["comparison_text"] = (
+                    f"{rule['label']} {threshold['operator']} {_format_sleep_duration(threshold['value'])}"
+                )
             return {"_macro": "metric_threshold", **rule, **threshold}
     return None
 
@@ -1301,14 +1868,18 @@ def _threshold_order_direction(operator: str) -> str:
     return "DESC" if operator in {">", ">="} else "ASC"
 
 
-def _format_threshold_value(value, unit: str) -> str:
+def _format_threshold_value(value, unit: str, metric: str | None = None) -> str:
     if value is None:
         return "not recorded"
+    if metric == "sleep_duration":
+        return _format_sleep_duration(value)
     return f"{value}{unit}"
 
 
 def _format_metric_threshold_answer(plan: dict, result: list[tuple]) -> str:
-    comparison = f"{plan['label']} {plan['operator']} {plan['value']}"
+    comparison = plan.get("comparison_text") or f"{plan['label']} {plan['operator']} {plan['value']}"
+    if plan.get("metric") == "sleep_duration" and not plan.get("comparison_text"):
+        comparison = f"{plan['label']} {plan['operator']} {_format_sleep_duration(plan['value'])}"
     unit = plan.get("unit", "")
 
     if not result:
@@ -1325,7 +1896,7 @@ def _format_metric_threshold_answer(plan: dict, result: list[tuple]) -> str:
             )
         else:
             name, flat_no, value = row
-            value_text = _format_threshold_value(value, unit)
+            value_text = _format_threshold_value(value, unit, plan.get("metric"))
         lines.append(f"- {name} ({flat_no or 'room not recorded'}): {value_text}")
     return "\n".join(lines)
 
@@ -1336,6 +1907,35 @@ def _run_metric_threshold(plan: dict, community_id: int) -> dict:
     order_direction = _threshold_order_direction(operator)
     kind = plan.get("kind")
     column = plan["column"]
+
+    if kind == "health" and plan.get("metric") == "bp" and plan.get("bp_any_thresholds"):
+        bp_thresholds = plan["bp_any_thresholds"]
+        comparator = "OR"
+        conditions = [f"{col} {operator} %s" for col, _value in bp_thresholds]
+        condition_sql = f" {comparator} ".join(conditions)
+        sql = f"""
+        WITH latest_health AS (
+            SELECT DISTINCT ON (resident_id)
+                resident_id, bp_systolic, bp_diastolic, sugar_level, recorded_at
+            FROM health_reports
+            ORDER BY resident_id, recorded_at DESC
+        )
+        SELECT r.name, r.flat_no, h.bp_systolic, h.bp_diastolic
+        FROM residents r
+        JOIN latest_health h ON r.id = h.resident_id
+        WHERE r.community_id = %s
+          AND ({condition_sql})
+        ORDER BY h.bp_systolic {order_direction}, h.bp_diastolic {order_direction}, r.name ASC;
+        """
+        params = tuple([community_id] + [value for _col, value in bp_thresholds])
+        result = run_query(sql, params)
+        return {
+            "query": "",
+            "plan": plan,
+            "sql": sql,
+            "result": result,
+            "answer": _format_metric_threshold_answer(plan, result),
+        }
 
     if kind == "resident":
         sql = f"""
@@ -1552,6 +2152,97 @@ def _run_device_status(plan: dict) -> dict:
     return {"query": "", "plan": plan, "sql": sql, "result": result, "answer": answer}
 
 
+def _is_visual_request(query: str) -> bool:
+    q_lower = query.lower()
+    return any(keyword in q_lower for keyword in _VISUAL_KEYWORDS)
+
+
+def _detect_chart_type(query: str) -> str:
+    q_lower = query.lower()
+    if "pie" in q_lower:
+        return "pie"
+    if "line" in q_lower:
+        return "line"
+    if "doughnut" in q_lower or "donut" in q_lower:
+        return "doughnut"
+    return "bar"
+
+
+def _build_chart_payload(labels: list[str], values: list[float], label: str, query: str) -> dict | None:
+    if not labels or not values:
+        return None
+
+    chart_type = _detect_chart_type(query)
+    return {
+        "type": chart_type,
+        "data": {
+            "labels": labels[:31],
+            "datasets": [{
+                "label": label,
+                "data": values[:31],
+                "backgroundColor": ["#38bdf8", "#818cf8", "#4ade80", "#fbbf24", "#f87171", "#c084fc"],
+                "borderColor": "rgba(255, 255, 255, 0.1)",
+                "borderWidth": 1,
+            }],
+        },
+        "options": {
+            "responsive": True,
+            "maintainAspectRatio": False,
+            "plugins": {
+                "legend": {"display": chart_type != "bar"},
+            },
+        },
+    }
+
+
+def _metric_summary_chart_payload(query: str, metric: str, result: list[tuple]) -> dict | None:
+    if not _is_visual_request(query) or not result:
+        return None
+
+    labels = []
+    values = []
+    chart_label = "Requested Health Metric"
+
+    if metric == "bp":
+        chart_label = "Systolic Blood Pressure"
+        for name, _flat_no, systolic, _diastolic, _sugar in result:
+            if systolic is not None:
+                labels.append(str(name))
+                values.append(float(systolic))
+    elif metric == "sugar":
+        chart_label = "Sugar Level"
+        for name, _flat_no, _systolic, _diastolic, sugar in result:
+            if sugar is not None:
+                labels.append(str(name))
+                values.append(float(sugar))
+    elif metric == "steps":
+        chart_label = "Step Count"
+        for name, _flat_no, steps in result:
+            if steps is not None:
+                labels.append(str(name))
+                values.append(float(steps))
+    elif metric == "sleep_quality":
+        chart_label = "Sleep Quality Score"
+        for name, _flat_no, _duration, score in result:
+            if score is not None:
+                labels.append(str(name))
+                values.append(float(score))
+    elif metric == "sleep_duration":
+        chart_label = "Sleep Duration (hours)"
+        for name, _flat_no, duration, _score in result:
+            if duration is not None:
+                labels.append(str(name))
+                values.append(float(duration) / 60)
+    else:
+        chart_label = "Care Metrics"
+        for name, _flat_no, _systolic, _diastolic, _sugar, _steps, _sleep_duration, sleep_score in result:
+            if sleep_score is not None:
+                labels.append(str(name))
+                values.append(float(sleep_score))
+
+    return _build_chart_payload(labels, values, chart_label, query)
+
+
 def _run_resident_metric_summary(plan: dict, community_id: int) -> dict:
     metric = plan.get("_metric")
     if metric in {"bp", "sugar"}:
@@ -1641,6 +2332,7 @@ def _run_resident_metric_summary(plan: dict, community_id: int) -> dict:
         "sql": sql,
         "result": result,
         "answer": _format_resident_metric_summary_answer(metric, result),
+        "chart_data": _metric_summary_chart_payload(plan.get("_query", ""), metric, result),
     }
 
 
@@ -1679,7 +2371,7 @@ def _format_resident_metric_summary_answer(metric: str, result: list[tuple]) -> 
     if metric == "sleep_duration":
         lines = ["Resident sleep durations:"]
         for name, flat_no, duration, _score in result:
-            duration_text = f"{duration} minutes" if duration is not None else "not recorded"
+            duration_text = _format_sleep_duration(duration)
             lines.append(f"- {name} ({flat_no or 'room not recorded'}): {duration_text}")
         return "\n".join(lines)
 
@@ -1690,7 +2382,7 @@ def _format_resident_metric_summary_answer(metric: str, result: list[tuple]) -> 
         sugar_text = f"sugar {sugar}" if sugar is not None else "sugar not recorded"
         steps_text = f"steps {steps}" if steps is not None else "steps not recorded"
         sleep_text = (
-            f"sleep {sleep_duration} minutes, score {sleep_score}"
+            f"sleep {_format_sleep_duration(sleep_duration, 'duration not recorded')}, score {sleep_score}"
             if sleep_duration is not None or sleep_score is not None
             else "sleep not recorded"
         )
@@ -1713,6 +2405,14 @@ def _detect_named_resident_metric(query: str) -> str | None:
 def _is_care_assessment_query(query: str) -> bool:
     q_lower = query.lower()
     return any(keyword in q_lower for keyword in _CARE_ASSESSMENT_KEYWORDS)
+
+
+def _is_age_care_assessment_query(query: str) -> bool:
+    q_lower = query.lower()
+    return (
+        _detect_resident_age_rank_type(q_lower) is not None
+        and _contains_care_phrase(q_lower, _HIGH_RISK_CARE_PHRASES)
+    )
 
 
 def _contains_care_phrase(q_lower: str, phrases: list[str]) -> bool:
@@ -1742,10 +2442,140 @@ def _find_named_resident_in_query(query: str, community_id: int) -> str | None:
         if resident_name and resident_name.lower() in q_lower:
             return resident_name
 
+    first_name_matches = []
+    for row in rows:
+        resident_name = str(row[0]).strip()
+        first_name = resident_name.split()[0].lower() if resident_name else ""
+        if first_name and re.search(rf"\b{re.escape(first_name)}(?:'s)?\b", q_lower):
+            first_name_matches.append(resident_name)
+    if len(first_name_matches) == 1:
+        return first_name_matches[0]
+
     return _extract_resident_name(query)
 
 
-def _format_named_resident_metric_answer(metric: str, row: tuple) -> str:
+_METRIC_INTERPRETATION_TERMS = [
+    "good", "bad", "normal", "okay", "ok", "fine", "concerning",
+    "concern", "low", "high", "better", "worse",
+]
+
+
+def _wants_metric_interpretation(query: str) -> bool:
+    q_lower = query.lower()
+    return any(re.search(rf"(?<!\w){re.escape(term)}(?!\w)", q_lower) for term in _METRIC_INTERPRETATION_TERMS)
+
+
+def _interpret_single_metric(metric: str, row: tuple) -> str | None:
+    (
+        name,
+        _flat_no,
+        _age,
+        _history,
+        _medication,
+        bp_systolic,
+        bp_diastolic,
+        sugar_level,
+        steps_count,
+        sleep_duration_minutes,
+        sleep_quality_score,
+    ) = row
+
+    systolic = _to_float(bp_systolic)
+    diastolic = _to_float(bp_diastolic)
+    sugar = _to_float(sugar_level)
+    steps = _to_float(steps_count)
+    sleep_minutes = _to_float(sleep_duration_minutes)
+    sleep_score = _to_float(sleep_quality_score)
+
+    if metric == "sleep_quality":
+        if sleep_score is None:
+            return f"{name}'s sleep quality score is not recorded, so I cannot say whether it is good or bad."
+        if sleep_score < 50:
+            status = "low"
+            meaning = "poorer sleep quality and a stronger review signal"
+        elif sleep_score < 60:
+            status = "borderline"
+            meaning = "not clearly good and should be reviewed with sleep duration and other metrics"
+        else:
+            status = "not flagged as low"
+            meaning = "better than the low or borderline range used by this project's care heuristic"
+        return (
+            f"{name}'s sleep quality score is {sleep_quality_score}. "
+            f"In this project's care heuristic, that is {status}: {meaning}. "
+            "This is not a diagnosis."
+        )
+
+    if metric == "sleep_duration":
+        if sleep_minutes is None:
+            return f"{name}'s sleep duration is not recorded, so I cannot say whether it is good or bad."
+        if sleep_minutes < 300:
+            status = "short"
+        elif sleep_minutes < 360:
+            status = "reduced"
+        else:
+            status = "not flagged as reduced"
+        return (
+            f"{name}'s sleep duration is {_format_sleep_duration(sleep_duration_minutes)}. "
+            f"In this project's care heuristic, that is {status}. This is not a diagnosis."
+        )
+
+    if metric == "steps":
+        if steps is None:
+            return f"{name}'s step count is not recorded, so I cannot say whether it is good or bad."
+        if steps < 2500:
+            status = "low activity"
+        elif steps < 3500:
+            status = "reduced activity"
+        else:
+            status = "not flagged as low activity"
+        return (
+            f"{name}'s step count is {steps_count} steps. "
+            f"In this project's care heuristic, that is {status}. This is not a diagnosis."
+        )
+
+    if metric == "sugar":
+        if sugar is None:
+            return f"{name}'s sugar level is not recorded, so I cannot say whether it is good or bad."
+        if sugar >= 180:
+            status = "very high"
+        elif sugar >= 140:
+            status = "high"
+        elif sugar >= 125:
+            status = "borderline"
+        else:
+            status = "not flagged as high"
+        return (
+            f"{name}'s sugar level is {sugar_level}. "
+            f"In this project's care heuristic, that is {status}. This is not a diagnosis."
+        )
+
+    if metric == "bp":
+        if systolic is None and diastolic is None:
+            return f"{name}'s blood pressure is not recorded, so I cannot say whether it is good or bad."
+        bp_text = f"{_metric_text(bp_systolic)}/{_metric_text(bp_diastolic)}"
+        if (systolic is not None and systolic >= 160) or (diastolic is not None and diastolic >= 100):
+            status = "very high"
+        elif (systolic is not None and systolic >= 140) or (diastolic is not None and diastolic >= 90):
+            status = "elevated"
+        elif (systolic is not None and systolic >= 130) or (diastolic is not None and diastolic >= 85):
+            status = "borderline"
+        else:
+            status = "not flagged as elevated"
+        return (
+            f"{name}'s latest blood pressure is {bp_text} mmHg. "
+            f"In this project's care heuristic, that is {status}. This is not a diagnosis."
+        )
+
+    if metric == "sleep":
+        score_answer = _interpret_single_metric("sleep_quality", row)
+        duration_answer = _interpret_single_metric("sleep_duration", row)
+        if score_answer and duration_answer:
+            return f"{score_answer}\n{duration_answer}"
+
+    return None
+
+
+def _format_named_resident_metric_answer(metric: str, row: tuple, query: str = "") -> str:
     (
         name,
         flat_no,
@@ -1769,7 +2599,7 @@ def _format_named_resident_metric_answer(metric: str, row: tuple) -> str:
     sugar_text = f"{sugar_level}" if sugar_level is not None else "not recorded"
     steps_text = f"{steps_count} steps" if steps_count is not None else "not recorded"
     sleep_duration_text = (
-        f"{sleep_duration_minutes} minutes"
+        _format_sleep_duration(sleep_duration_minutes)
         if sleep_duration_minutes is not None
         else "not recorded"
     )
@@ -1779,21 +2609,34 @@ def _format_named_resident_metric_answer(metric: str, row: tuple) -> str:
         else "not recorded"
     )
 
+    if _wants_metric_interpretation(query):
+        interpretation = _interpret_single_metric(metric, row)
+        if interpretation:
+            return interpretation
+
+    def value_answer(label: str, value_text: str, metric_key: str) -> str:
+        return "\n\n".join([
+            f"{name}'s latest {label} is {value_text}.",
+            f"What this means: {_metric_explanation(metric_key)}",
+            _metric_next_step(metric_key, name),
+        ])
+
     if metric == "bp":
-        return f"{name}'s latest blood pressure is {bp_text}."
+        return value_answer("blood pressure", bp_text, "bp")
     if metric == "sugar":
-        return f"{name}'s latest sugar level is {sugar_text}."
+        return value_answer("sugar level", sugar_text, "sugar")
     if metric == "steps":
-        return f"{name}'s latest step count is {steps_text}."
+        return value_answer("step count", steps_text, "steps")
     if metric == "sleep_duration":
-        return f"{name}'s latest sleep duration is {sleep_duration_text}."
+        return value_answer("sleep duration", sleep_duration_text, "sleep_duration")
     if metric == "sleep_quality":
-        return f"{name}'s latest sleep quality score is {sleep_quality_text}."
+        return value_answer("sleep quality score", sleep_quality_text, "sleep_quality")
     if metric == "sleep":
-        return (
-            f"{name}'s latest sleep metrics are: duration {sleep_duration_text}; "
-            f"quality score {sleep_quality_text}."
-        )
+        return "\n\n".join([
+            f"{name}'s latest sleep metrics are: duration {sleep_duration_text}; quality score {sleep_quality_text}.",
+            f"What this means: {_metric_explanation('sleep')}",
+            _metric_next_step("sleep", name),
+        ])
 
     return "\n".join([
         f"{resident_label} latest recorded metrics:",
@@ -1877,7 +2720,7 @@ def _run_named_resident_metric(query: str, metric: str, community_id: int) -> di
         "plan": plan,
         "sql": sql,
         "result": result,
-        "answer": _format_named_resident_metric_answer(metric, result[0]),
+        "answer": _format_named_resident_metric_answer(metric, result[0], query),
     }
 
 
@@ -1992,19 +2835,37 @@ def _format_metric_ranking_answer(query: str, plan: dict, result: list[tuple]) -
         return None
 
     metric_label = plan.get("_metric_label", "metric")
+    metric_key = {
+        "sleep_quality_score": "sleep_quality",
+        "sleep_duration_minutes": "sleep_duration",
+        "steps_count": "steps",
+        "sugar_level": "sugar",
+        "bp_systolic": "bp",
+    }.get(plan.get("_metric_name", ""), plan.get("_metric_name", ""))
     q_lower = query.lower()
 
     def format_metric_value(value) -> str:
         if plan.get("_metric_name") == "bp_systolic":
             return f"{value} mmHg"
         if plan.get("_metric_name") == "sleep_duration_minutes":
-            return f"{value} minutes"
+            return _format_sleep_duration(value)
         return str(value)
 
+    metric_name = plan.get("_metric_name", "")
     if any(re.search(pattern, q_lower) for pattern in _ASC_RANKING_PATTERNS):
-        qualifier = "worst" if "sleep" in metric_label else "lowest"
+        if metric_name == "sleep_quality_score":
+            qualifier = "worst"
+        elif metric_name == "sleep_duration_minutes" and "shortest" in q_lower:
+            qualifier = "shortest"
+        else:
+            qualifier = "lowest"
     else:
-        qualifier = "best" if "sleep" in metric_label else "highest"
+        if metric_name == "sleep_quality_score":
+            qualifier = "best"
+        elif metric_name == "sleep_duration_minutes" and "longest" in q_lower:
+            qualifier = "longest"
+        else:
+            qualifier = "highest"
 
     if plan.get("_is_rank_list"):
         lines = []
@@ -2016,7 +2877,11 @@ def _format_metric_ranking_answer(query: str, plan: dict, result: list[tuple]) -
             lines.append(f"{_ordinal_label(idx)}: {resident_name} - {format_metric_value(row[1])}")
         if not lines:
             return None
-        return f"The {qualifier} {metric_label} rankings are:\n" + "\n".join(lines)
+        return "\n\n".join([
+            f"The {qualifier} {metric_label} rankings are:\n" + "\n".join(lines),
+            f"What this means: These are the latest available {metric_label} rankings for the selected community.",
+            "Next step: Use the ranking to prioritize review, then check the resident's full profile and related metrics before acting.",
+        ])
 
     row = result[0]
     if len(row) < 2:
@@ -2028,7 +2893,11 @@ def _format_metric_ranking_answer(query: str, plan: dict, result: list[tuple]) -
     if rank_position and int(rank_position) > 1:
         qualifier = f"{_ordinal_label(int(rank_position))} {qualifier}"
 
-    return f"The resident with the {qualifier} {metric_label} is {resident_name}, with {metric_label} {metric_text}."
+    return "\n\n".join([
+        f"The resident with the {qualifier} {metric_label} is {resident_name}, with {metric_label} {metric_text}.",
+        f"What this means: This is the {qualifier} latest {metric_label} among residents with available records in the selected community.",
+        _metric_next_step(metric_key, resident_name),
+    ])
 
 
 def _format_empty_metric_ranking_answer(plan: dict) -> str:
@@ -2048,10 +2917,52 @@ def _to_float(value) -> float | None:
         return None
 
 
+def _format_sleep_duration(value, missing: str = "not recorded") -> str:
+    minutes = _to_float(value)
+    if minutes is None:
+        return missing
+
+    total_minutes = int(round(minutes))
+    sign = "-" if total_minutes < 0 else ""
+    hours, remaining_minutes = divmod(abs(total_minutes), 60)
+    if remaining_minutes == 0:
+        return f"{sign}{hours}h"
+    return f"{sign}{hours}h {remaining_minutes}m"
+
+
 def _metric_text(value, suffix: str = "") -> str:
     if value is None:
         return "not recorded"
     return f"{value}{suffix}"
+
+
+def _metric_explanation(metric: str) -> str:
+    if metric == "bp":
+        return "Blood pressure is a latest recorded vital, not live monitoring. Elevated values should be reviewed with clinical context."
+    if metric == "sugar":
+        return "Sugar level is a latest recorded reading and should be compared with the resident's usual range and care plan."
+    if metric == "steps":
+        return "Step count is a movement signal. Low values can reflect reduced activity, device non-wear, or missed synchronization."
+    if metric == "sleep_duration":
+        return "Sleep duration shows recorded rest time. Short or repeated low duration can be a useful review signal."
+    if metric == "sleep_quality":
+        return "Sleep quality score is a care-review signal. Lower scores can point to poorer rest or a data-quality issue."
+    if metric == "sleep":
+        return "Sleep duration and sleep quality should be read together before deciding whether follow-up is needed."
+    return "Use this value as recorded operational context and review it with related resident metrics."
+
+
+def _metric_next_step(metric: str, name: str | None = None) -> str:
+    subject = name if name else "the resident"
+    if metric in {"sleep_quality", "sleep_duration", "sleep"}:
+        return f"Next step: Check {subject}'s sleep duration, activity, and device sync status before deciding on follow-up. This is not a diagnosis."
+    if metric == "steps":
+        return f"Next step: Compare {subject}'s steps with recent sleep and health readings, and confirm the device was worn. This is not a diagnosis."
+    if metric == "bp":
+        return f"Next step: Review {subject}'s BP with recent sugar, sleep, symptoms, and the care protocol. This is not a diagnosis."
+    if metric == "sugar":
+        return f"Next step: Review {subject}'s sugar trend with meal timing, medication context, and care protocol. This is not a diagnosis."
+    return f"Next step: Review related metrics for {subject} before making an operational care decision."
 
 
 def _score_care_row(row: tuple) -> dict:
@@ -2114,9 +3025,9 @@ def _score_care_row(row: tuple) -> dict:
 
     if sleep_minutes is not None:
         if sleep_minutes < 300:
-            add(2, f"short sleep duration {sleep_duration_minutes} minutes")
+            add(2, f"short sleep duration {_format_sleep_duration(sleep_duration_minutes)}")
         elif sleep_minutes < 360:
-            add(1, f"reduced sleep duration {sleep_duration_minutes} minutes")
+            add(1, f"reduced sleep duration {_format_sleep_duration(sleep_duration_minutes)}")
 
     if steps is not None:
         if steps < 2500:
@@ -2176,20 +3087,28 @@ def _requested_care_display_count(q_lower: str) -> int:
     number_words = "|".join(_NUMBER_WORDS.keys())
 
     digit_match = re.search(
-        r"\b(?:only|just|top|first|show|give|list)(?:\s+me)?(?:\s+the)?\s+(\d+)\b",
+        r"\b(?:only|just|top|first|show|give|list|which|who)(?:\s+me)?(?:\s+the)?\s+(\d+)"
+        r"(?:\s+(?:person|people|resident|residents|patient|patients))?\b",
         q_lower,
     )
     if digit_match:
         return max(1, int(digit_match.group(1)))
 
     word_match = re.search(
-        rf"\b(?:only|just|top|first|show|give|list)(?:\s+me)?(?:\s+the)?\s+({number_words})\b",
+        rf"\b(?:only|just|top|first|show|give|list|which|who)(?:\s+me)?(?:\s+the)?\s+({number_words})"
+        r"(?:\s+(?:person|people|resident|residents|patient|patients))?\b",
         q_lower,
     )
     if word_match:
         return max(1, _NUMBER_WORDS[word_match.group(1)])
 
-    if any(phrase in q_lower for phrase in ["only one", "just one", "single resident", "one resident", "one patient"]):
+    if any(phrase in q_lower for phrase in [
+        "only one", "just one", "single person", "single resident", "single patient",
+        "one person", "one resident", "one patient", "1 person", "1 resident", "1 patient",
+    ]):
+        return 1
+
+    if re.search(r"\bwhich\s+(?:one\s+)?(?:person|resident|patient)\b", q_lower):
         return 1
 
     if re.search(
@@ -2216,11 +3135,183 @@ def _care_ranking_label(q_lower: str, wants_low_risk: bool) -> str:
         return "least-healthy"
     return "highest-priority"
 
+
+def _find_named_care_assessment(query: str, assessments: list[dict]) -> dict | None:
+    named_items = _find_named_care_assessments(query, assessments)
+    if len(named_items) == 1:
+        return named_items[0]
+    return None
+
+
+def _find_named_care_assessments(query: str, assessments: list[dict]) -> list[dict]:
+    name_to_item = {
+        str(item.get("name", "")).strip(): item
+        for item in assessments
+        if str(item.get("name", "")).strip()
+    }
+    matched_names = _match_resident_names_in_query(query, list(name_to_item.keys()))
+    return [name_to_item[name] for name in matched_names if name in name_to_item]
+
+
+def _find_single_named_care_assessment(query: str, assessments: list[dict]) -> dict | None:
+    q_lower = query.lower()
+    for item in assessments:
+        resident_name = str(item.get("name", "")).strip()
+        if resident_name and resident_name.lower() in q_lower:
+            return item
+
+    first_name_matches = []
+    for item in assessments:
+        resident_name = str(item.get("name", "")).strip()
+        first_name = resident_name.split()[0].lower() if resident_name else ""
+        if first_name and re.search(rf"\b{re.escape(first_name)}(?:'s)?\b", q_lower):
+            first_name_matches.append(item)
+    if len(first_name_matches) == 1:
+        return first_name_matches[0]
+
+    return None
+
+
+def _multi_care_question_wants_choice(query: str) -> bool:
+    q_lower = query.lower()
+    return (
+        re.search(r"\b(?:who|which)\b", q_lower) is not None
+        or _contains_care_phrase(q_lower, _HIGH_RISK_CARE_PHRASES)
+        or _contains_care_phrase(q_lower, _LOW_RISK_CARE_PHRASES)
+    )
+
+
+def _format_named_care_assessment_answer(item: dict) -> str:
+    name = item["name"]
+    bp = f"{_metric_text(item['bp_systolic'])}/{_metric_text(item['bp_diastolic'])}"
+    metrics = (
+        f"BP {bp}, sugar {_metric_text(item['sugar_level'])}, "
+        f"sleep score {_metric_text(item['sleep_quality_score'])}, "
+        f"sleep duration {_format_sleep_duration(item['sleep_duration_minutes'])}, "
+        f"steps {_metric_text(item['steps_count'])}"
+    )
+    reasons = "; ".join(item["reasons"][:4])
+
+    if item["care_priority"] == "High":
+        opening = f"Yes. {name} is high priority in this project's care heuristic."
+    elif item["care_priority"] == "Moderate":
+        opening = f"Yes, {name} should get closer review, but the priority is moderate rather than high."
+    else:
+        opening = f"{name} is routine priority in this project's care heuristic, so there is no strong extra-care signal from the recorded values."
+
+    return "\n".join([
+        opening,
+        f"Care score: {item['care_score']} ({item['care_priority']} priority).",
+        f"Recorded values: {metrics}.",
+        f"Main reasons: {reasons}.",
+        "This is a data-prioritization heuristic from recorded values, not a diagnosis.",
+    ])
+
+
+def _format_multiple_named_care_assessment_answer(query: str, items: list[dict]) -> str:
+    if not items:
+        return "I couldn't find matching resident care records in this community."
+
+    sorted_by_care = sorted(items, key=lambda item: (-item["care_score"], item["name"]))
+    lines = []
+    if len(items) > 1 and _multi_care_question_wants_choice(query):
+        top = sorted_by_care[0]
+        lines.append(
+            f"Among the requested residents, {top['name']} has the higher care priority "
+            f"({top['care_priority']} priority, score {top['care_score']})."
+        )
+    else:
+        lines.append("Care assessment for requested residents:")
+
+    for item in items:
+        bp = f"{_metric_text(item['bp_systolic'])}/{_metric_text(item['bp_diastolic'])}"
+        metrics = (
+            f"BP {bp}, sugar {_metric_text(item['sugar_level'])}, "
+            f"sleep score {_metric_text(item['sleep_quality_score'])}, "
+            f"sleep duration {_format_sleep_duration(item['sleep_duration_minutes'])}, "
+            f"steps {_metric_text(item['steps_count'])}"
+        )
+        reasons = "; ".join(item["reasons"][:4])
+        lines.append(
+            f"- {item['name']}: {item['care_priority']} priority "
+            f"(score {item['care_score']}). {metrics}. Reasons: {reasons}."
+        )
+
+    lines.append("This is a data-prioritization heuristic from recorded values, not a diagnosis.")
+    return "\n".join(lines)
+
+
+def _format_oldest_care_assessment_answer(assessments: list[dict]) -> str:
+    age_recorded = [
+        item for item in assessments
+        if _to_float(item.get("age")) is not None
+    ]
+    if not age_recorded:
+        return _format_care_assessment_answer("who needs the most care?", assessments)
+
+    oldest_item = max(
+        age_recorded,
+        key=lambda item: (_to_float(item.get("age")) or 0, str(item.get("name", ""))),
+    )
+    care_item = _sort_care_assessments(assessments, "who needs the most care?")[0]
+
+    care_bp = f"{_metric_text(care_item['bp_systolic'])}/{_metric_text(care_item['bp_diastolic'])}"
+    care_metrics = (
+        f"BP {care_bp}, sugar {_metric_text(care_item['sugar_level'])}, "
+        f"sleep score {_metric_text(care_item['sleep_quality_score'])}, "
+        f"steps {_metric_text(care_item['steps_count'])}"
+    )
+    care_reasons = "; ".join(care_item["reasons"][:4])
+
+    if oldest_item["resident_id"] == care_item["resident_id"]:
+        return "\n".join([
+            (
+                f"{care_item['name']} is the oldest resident at {care_item['age']} years old "
+                "and also needs the most care based on the recorded data."
+            ),
+            f"Care priority: {care_item['care_priority']} (score {care_item['care_score']}).",
+            f"Main reasons: {care_reasons}.",
+            f"Recorded values: {care_metrics}.",
+            (
+                f"Next step: Prioritize a check-in for {care_item['name']} and review the latest "
+                "BP, sugar, sleep, activity, and care-plan notes. This is not a diagnosis."
+            ),
+        ])
+
+    return "\n".join([
+        f"The oldest resident is {oldest_item['name']}, age {oldest_item['age']}.",
+        (
+            f"The resident who needs the most care based on recorded data is {care_item['name']}, "
+            f"age {care_item['age']}."
+        ),
+        f"Care priority: {care_item['care_priority']} (score {care_item['care_score']}).",
+        f"Main reasons: {care_reasons}.",
+        f"Recorded values: {care_metrics}.",
+        (
+            f"Next step: Prioritize a care review for {care_item['name']}, while keeping "
+            f"{oldest_item['name']} on age-related monitoring. This is not a diagnosis."
+        ),
+    ])
+
+
 def _format_care_assessment_answer(query: str, assessments: list[dict]) -> str:
     if not assessments:
         return "I couldn't find resident records with linked health, activity, and sleep metrics."
 
+    named_items = _find_named_care_assessments(query, assessments)
+    if len(named_items) > 1:
+        return _format_multiple_named_care_assessment_answer(query, named_items)
+    if len(named_items) == 1:
+        return _format_named_care_assessment_answer(named_items[0])
+
+    named_item = _find_single_named_care_assessment(query, assessments)
+    if named_item:
+        return _format_named_care_assessment_answer(named_item)
+
     q_lower = query.lower()
+    if _is_age_care_assessment_query(query):
+        return _format_oldest_care_assessment_answer(assessments)
+
     sorted_items = _sort_care_assessments(assessments, query)
     wants_low_risk = (
         _contains_care_phrase(q_lower, _LOW_RISK_CARE_PHRASES)
@@ -2295,10 +3386,16 @@ def _run_care_assessment(query: str, community_id: int) -> dict:
     """
     rows = run_query(sql, (community_id,))
     assessments = [_score_care_row(row) for row in rows]
-    sorted_assessments = _sort_care_assessments(assessments, query)
+    named_items = _find_named_care_assessments(query, assessments)
+    named_item = named_items[0] if len(named_items) == 1 else _find_single_named_care_assessment(query, assessments)
+    sorted_assessments = named_items if len(named_items) > 1 else [named_item] if named_item else _sort_care_assessments(assessments, query)
     return {
         "query": query,
-        "plan": {"macro": "deterministic_care_assessment"},
+        "plan": {
+            "macro": "deterministic_care_assessment",
+            "resident_name": named_item["name"] if named_item else None,
+            "resident_names": [item["name"] for item in named_items] if len(named_items) > 1 else None,
+        },
         "sql": sql,
         "result": sorted_assessments,
         "answer": _format_care_assessment_answer(query, assessments),
@@ -2306,6 +3403,46 @@ def _run_care_assessment(query: str, community_id: int) -> dict:
 
 
 _COMMUNITY_SCOPED_TABLES = {"residents", "health_reports", "activity_metrics", "sleep_analytics"}
+
+
+def _resident_name_filter_value(value) -> str:
+    clean_value = str(value).replace("'s", "").replace("â€™s", "").strip()
+    return clean_value
+
+
+def _bare_possessive_name_fallback(value) -> str | None:
+    clean_value = _resident_name_filter_value(value)
+    if clean_value.lower().endswith("s") and len(clean_value) > 1:
+        return clean_value[:-1].strip()
+    return None
+
+
+def _profile_plan_with_bare_possessive_fallback(plan: dict) -> dict | None:
+    fallback_plan = dict(plan)
+    fallback_filters = []
+    changed = False
+
+    for item in plan.get("filters", []):
+        if not isinstance(item, dict):
+            fallback_filters.append(item)
+            continue
+
+        fallback_item = dict(item)
+        if (
+            str(fallback_item.get("column", "")).lower() == "residents.name"
+            and fallback_item.get("operator", "=") == "="
+        ):
+            fallback_value = _bare_possessive_name_fallback(fallback_item.get("value"))
+            if fallback_value and fallback_value != fallback_item.get("value"):
+                fallback_item["value"] = fallback_value
+                changed = True
+        fallback_filters.append(fallback_item)
+
+    if not changed:
+        return None
+
+    fallback_plan["filters"] = fallback_filters
+    return fallback_plan
 
 
 def build_sql(plan: dict, community_id: int) -> tuple[str, list]:
@@ -2368,7 +3505,9 @@ def build_sql(plan: dict, community_id: int) -> tuple[str, list]:
                 continue
             # 2. IMPROVEMENT: Use ILIKE for case-insensitive name matching
             if "name" in col.lower() and op == "=":
-                clean_val = str(val).replace("'s", "").replace("’s", "").strip()
+                clean_val = _resident_name_filter_value(val)
+                if not clean_val:
+                    continue
                 conditions.append(f"{col} ILIKE %s")
                 params.append(f"%{clean_val}%")
             else:
@@ -2466,6 +3605,11 @@ def handle_sql(query: str, community_id: int) -> dict:
                 "answer": _format_resident_list_answer(result),
             }
 
+        multi_metric_response = _run_multi_resident_metric(query, community_id)
+        if multi_metric_response:
+            logger.info(f"Using deterministic multi-resident metric plan: {multi_metric_response.get('plan')}")
+            return multi_metric_response
+
         resident_average_metric_plan = _detect_resident_average_metric_plan(query)
         if resident_average_metric_plan:
             logger.info(f"Using deterministic resident average metric plan: {resident_average_metric_plan}")
@@ -2473,12 +3617,31 @@ def handle_sql(query: str, community_id: int) -> dict:
             response["query"] = query
             return response
 
+        named_metric = _detect_named_resident_metric(query)
+        if named_metric:
+            named_metric_response = _run_named_resident_metric(query, named_metric, community_id)
+            if named_metric_response:
+                logger.info(f"Using deterministic named resident metric plan: {named_metric_response.get('plan')}")
+                return named_metric_response
+
+        metric_threshold_plan = _detect_metric_threshold_plan(query)
+        if metric_threshold_plan:
+            logger.info(f"Using deterministic metric threshold plan: {metric_threshold_plan}")
+            response = _run_metric_threshold(metric_threshold_plan, community_id)
+            response["query"] = query
+            return response
+
         resident_metric_summary_plan = _detect_resident_metric_summary_plan(query)
         if resident_metric_summary_plan:
             logger.info(f"Using deterministic resident metric summary plan: {resident_metric_summary_plan}")
+            resident_metric_summary_plan["_query"] = query
             response = _run_resident_metric_summary(resident_metric_summary_plan, community_id)
             response["query"] = query
             return response
+
+        if _is_age_care_assessment_query(query):
+            logger.info("Executing deterministic age-aware care assessment macro...")
+            return _run_care_assessment(query, community_id)
 
         resident_aggregate_plan = _detect_resident_aggregate_plan(query)
         if resident_aggregate_plan:
@@ -2498,13 +3661,6 @@ def handle_sql(query: str, community_id: int) -> dict:
             response["query"] = query
             return response
 
-        metric_threshold_plan = _detect_metric_threshold_plan(query)
-        if metric_threshold_plan:
-            logger.info(f"Using deterministic metric threshold plan: {metric_threshold_plan}")
-            response = _run_metric_threshold(metric_threshold_plan, community_id)
-            response["query"] = query
-            return response
-
         resident_text_search_plan = _detect_resident_text_search_plan(query)
         if resident_text_search_plan:
             logger.info(f"Using deterministic resident text search plan: {resident_text_search_plan}")
@@ -2512,18 +3668,25 @@ def handle_sql(query: str, community_id: int) -> dict:
             response["query"] = query
             return response
 
-        named_metric = _detect_named_resident_metric(query)
-        if named_metric:
-            named_metric_response = _run_named_resident_metric(query, named_metric, community_id)
-            if named_metric_response:
-                logger.info(f"Using deterministic named resident metric plan: {named_metric_response.get('plan')}")
-                return named_metric_response
+        multi_profile_response = _run_multi_resident_profile(query, community_id)
+        if multi_profile_response:
+            logger.info(f"Using deterministic multi-resident profile plan: {multi_profile_response.get('plan')}")
+            return multi_profile_response
 
         direct_profile_plan = None if _is_care_assessment_query(query) else _detect_resident_profile_plan(query)
         if direct_profile_plan:
             logger.info(f"Using deterministic resident profile plan: {direct_profile_plan}")
             sql, params = build_sql(direct_profile_plan, community_id)
             result = run_query(sql, params)
+            if not result:
+                fallback_profile_plan = _profile_plan_with_bare_possessive_fallback(direct_profile_plan)
+                if fallback_profile_plan:
+                    fallback_sql, fallback_params = build_sql(fallback_profile_plan, community_id)
+                    fallback_result = run_query(fallback_sql, fallback_params)
+                    if fallback_result:
+                        direct_profile_plan = fallback_profile_plan
+                        sql = fallback_sql
+                        result = fallback_result
 
             if not result:
                 return {

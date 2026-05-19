@@ -3,19 +3,44 @@ Memory Agent — Persistent Session Core using Redis.
 Provides high-performance, distributed session history for the AI assistant.
 """
 import json
-import redis
+import os
+from pathlib import Path
 import re
+
+try:
+    import redis
+except Exception:
+    redis = None
+
 from app.llm.client import ask_llm
 from app.core.config import REDIS_HOST, REDIS_PORT, REDIS_DB
 from app.core.logger import get_logger
 
 logger = get_logger("memory")
 
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_HISTORY_FILE = Path(
+    os.getenv("CHAT_HISTORY_FILE", str(_REPO_ROOT / ".cache" / "kubocare_chat_history.json"))
+)
+MAX_HISTORY_TURNS = max(1, _env_int("MAX_HISTORY_TURNS", 50))
+HISTORY_TTL_SECONDS = max(60, _env_int("HISTORY_TTL_SECONDS", 60 * 60 * 24 * 30))
+
 # ----------------------------
 # Redis Persistence Client
 # ----------------------------
 # Initialize Redis connection
 try:
+    if redis is None:
+        raise RuntimeError("redis package is not installed")
+
     _redis_client = redis.Redis(
         host=REDIS_HOST,
         port=REDIS_PORT,
@@ -26,13 +51,12 @@ try:
     _redis_client.ping()
     logger.info(f"Redis connected successfully at {REDIS_HOST}:{REDIS_PORT}")
 except Exception as e:
-    logger.error(f"Redis connection failed: {e}. Falling back to in-memory (limited session lifetime).")
+    logger.error(f"Redis connection failed: {e}. Falling back to local file history at {_HISTORY_FILE}.")
     _redis_client = None
 
 # Fallback store if Redis is unavailable
 _memory_fallback: dict[str, list[dict]] = {}
 
-MAX_HISTORY_TURNS = 3  # Reduced to save CPU/Heat and keep context focused
 ACKNOWLEDGEMENT_WORDS = [
     "ok", "okay", "ohk", "oh okay", "fine", "alright", "got it", "cool", "understood",
     "thanks", "thank you", "noted", "sure", "yep", "yes", "no", "nah", "gotcha"
@@ -48,6 +72,73 @@ _SHORT_CHAT_RE = re.compile(
     re.IGNORECASE,
 )
 
+
+def _valid_history(history) -> list[dict]:
+    if not isinstance(history, list):
+        return []
+
+    valid_turns: list[dict] = []
+    for turn in history:
+        if not isinstance(turn, dict):
+            continue
+        user_text = str(turn.get("user", "")).strip()
+        ai_text = str(turn.get("ai", "")).strip()
+        if user_text or ai_text:
+            valid_turns.append({"user": user_text, "ai": ai_text})
+    return valid_turns[-MAX_HISTORY_TURNS:]
+
+
+def _load_file_store() -> dict[str, list[dict]]:
+    try:
+        if not _HISTORY_FILE.exists():
+            return {}
+        with _HISTORY_FILE.open("r", encoding="utf-8") as handle:
+            raw_store = json.load(handle)
+    except Exception as e:
+        logger.error(f"Failed to load local history file: {e}")
+        return {}
+
+    if not isinstance(raw_store, dict):
+        return {}
+
+    return {
+        str(session_id): _valid_history(history)
+        for session_id, history in raw_store.items()
+    }
+
+
+def _save_file_store(store: dict[str, list[dict]]) -> None:
+    try:
+        _HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temp_file = _HISTORY_FILE.with_suffix(f"{_HISTORY_FILE.suffix}.tmp")
+        with temp_file.open("w", encoding="utf-8") as handle:
+            json.dump(store, handle)
+        temp_file.replace(_HISTORY_FILE)
+    except Exception as e:
+        logger.error(f"Failed to save local history file: {e}")
+
+
+def _get_file_history(session_id: str) -> list[dict]:
+    if session_id not in _memory_fallback:
+        _memory_fallback.update(_load_file_store())
+    return _valid_history(_memory_fallback.get(session_id, []))
+
+
+def _set_file_history(session_id: str, history: list[dict]) -> None:
+    _memory_fallback[session_id] = _valid_history(history)
+    store = _load_file_store()
+    store[session_id] = _memory_fallback[session_id]
+    _save_file_store(store)
+
+
+def _delete_file_history(session_id: str) -> None:
+    _memory_fallback.pop(session_id, None)
+    store = _load_file_store()
+    if session_id in store:
+        store.pop(session_id, None)
+        _save_file_store(store)
+
+
 def get_history(session_id: str) -> list[dict]:
     """Retrieve chat history from Redis (or memory fallback)."""
     key = f"kubo_session:{session_id}"
@@ -56,39 +147,41 @@ def get_history(session_id: str) -> list[dict]:
         try:
             data = _redis_client.get(key)
             history = json.loads(data) if data else []
-            return history if isinstance(history, list) else []
+            return _valid_history(history)
         except Exception as e:
             logger.error(f"Failed to fetch from Redis: {e}")
-            return []
+            return _get_file_history(session_id)
     
-    history = _memory_fallback.get(session_id, [])
-    return history if isinstance(history, list) else []
+    return _get_file_history(session_id)
 
 def add_turn(session_id: str, user_msg: str, ai_msg: str):
-    """Save a turn to Redis with a TTL (Time To Live)."""
+    """Save a turn to Redis, or to local durable storage when Redis is unavailable."""
     history = get_history(session_id)
     history.append({"user": user_msg, "ai": ai_msg})
     
     # Keep only the last N turns
-    history = history[-MAX_HISTORY_TURNS:]
+    history = _valid_history(history)
     
     key = f"kubo_session:{session_id}"
     if _redis_client:
         try:
-            # Store as JSON string with a 24-hour expiration
-            _redis_client.setex(key, 86400, json.dumps(history))
+            _redis_client.setex(key, HISTORY_TTL_SECONDS, json.dumps(history))
+            return
         except Exception as e:
             logger.error(f"Failed to save to Redis: {e}")
-    else:
-        _memory_fallback[session_id] = history
+
+    _set_file_history(session_id, history)
 
 def clear_history(session_id: str):
     """Delete session history."""
     key = f"kubo_session:{session_id}"
     if _redis_client:
-        _redis_client.delete(key)
-    else:
-        _memory_fallback.pop(session_id, None)
+        try:
+            _redis_client.delete(key)
+        except Exception as e:
+            logger.error(f"Failed to delete Redis history: {e}")
+
+    _delete_file_history(session_id)
 
 _REWRITE_SYSTEM_PROMPT = """You are a query re-writing tool.
 You do NOT answer questions. You do NOT apologize. You only output the REWRITTEN QUERY.
@@ -156,7 +249,7 @@ _PLURAL_RESIDENT_FOLLOWUP_WORDS = {
     "they", "them", "their", "theirs", "these", "those",
 }
 _SINGLE_RESIDENT_FOLLOWUP_WORDS = {
-    "he", "she", "his", "her", "hers", "him", "same", "that",
+    "he", "she", "his", "her", "hers", "him", "it", "its", "this", "same", "that",
 }
 _NAME_STOPWORDS = {
     "resident", "patient", "residents", "patients", "medical", "history",
@@ -166,8 +259,9 @@ _NAME_STOPWORDS = {
     "what", "which", "who", "whom", "whose", "where", "when", "why", "how",
     "is", "are", "was", "were", "be", "being", "been", "do", "does", "did",
     "the", "a", "an", "their", "them", "they", "his", "her", "hers", "him",
-    "this", "that", "these", "those", "all", "same", "list", "show", "give",
-    "tell", "get", "me", "please",
+    "he", "she", "it", "its", "this", "that", "these", "those", "all", "same",
+    "and", "or",
+    "list", "show", "give", "tell", "get", "me", "please", "on",
 }
 
 _COLLECTION_FOLLOWUP_METRIC_TERMS = [
@@ -178,6 +272,32 @@ _COLLECTION_FOLLOWUP_METRIC_TERMS = [
     "bp", "blood pressure", "sugar", "glucose", "steps", "step count",
     "activity", "sleep score", "sleep quality", "sleep scores",
     "sleep duration", "sleep time", "slept",
+]
+_NAMED_PROFILE_LOOKUP_TERMS = [
+    "detail", "details", "profile", "info", "information", "about",
+    "age", "ages", "old", "flat", "room", "medical history",
+    "health history", "history", "medication", "medications", "intake",
+    "prescribed", "treatment",
+]
+_CARE_FOLLOWUP_TERMS = [
+    "care", "more care", "needs care", "need care", "requires care",
+    "priority", "attention", "risk", "healthy", "unhealthy",
+]
+_METRIC_INTERPRETATION_TERMS = [
+    "good", "bad", "normal", "okay", "ok", "fine", "concerning",
+    "concern", "low", "high", "better", "worse",
+]
+_GENERAL_EXPLANATION_START_RE = re.compile(
+    r"^\s*(?:what\s+(?:is|are)|explain|define|meaning\s+of|how\s+(?:is|are|does|do)|why\s+(?:is|are|does|do))\b",
+    re.IGNORECASE,
+)
+_GENERAL_EXPLANATION_TERMS = [
+    "bp", "blood pressure", "sugar", "glucose", "sleep quality score",
+    "sleep score", "sleep duration", "step count", "vitals", "vital signs",
+    "hypertension", "diabetes", "pre-diabetes", "prediabetes", "arthritis",
+    "asthma", "cardiac", "cardiovascular", "osteoporosis", "thyroid",
+    "atorvastatin", "metformin", "amlodipine", "paracetamol", "salbutamol",
+    "telmisartan", "levothyroxine", "aspirin", "calcium", "vitamin",
 ]
 
 _RANKING_OR_SUPERLATIVE_TERMS = [
@@ -241,8 +361,33 @@ def _has_specific_name_in_query(query: str) -> bool:
         r"sleep score|sleep quality|sleep duration|age|room|flat|"
         r"medical history|medication|prescribed|details?"
     )
+    for match in re.finditer(
+        rf"\b(?:what\s+is|what's|how\s+old\s+is|where\s+(?:does|is))\s+"
+        rf"([a-z]+\s+[a-z]+(?:\s+[a-z]+)?)(?:'s)?\s+(?:{metric_tail})\b",
+        q_lower,
+    ):
+        if _is_plausible_resident_name(match.group(1)):
+            return True
+
     for match in re.finditer(rf"\b([a-z]+\s+[a-z]+(?:\s+[a-z]+)?)\s+(?:{metric_tail})\b", q_lower):
         if _is_plausible_resident_name(match.group(1)):
+            return True
+
+    profile_tail = (
+        r"details?|profile|info|information|age|old|room|flat|"
+        r"medical history|health history|history|medication|prescribed|intake|treatment"
+    )
+    fragment_patterns = [
+        rf"\b(?:give|show|display|get|tell)\b(?:\s+me)?(?:\s+the)?\s+(?:{profile_tail})\s+"
+        rf"(?:of|for|about)\s+(?:resident\s+|patient\s+)?([a-z]+)\b",
+        rf"\b(?:{profile_tail})\s+(?:of|for|about)\s+(?:resident\s+|patient\s+)?([a-z]+)\b",
+        rf"\b(?:what\s+is|what's|how\s+old\s+is|where\s+(?:does|is))\s+"
+        rf"(?:resident\s+|patient\s+)?([a-z]+)(?:'s)?\s+(?:{metric_tail})\b",
+        rf"\b([a-z]+)\s+(?:{profile_tail})\b",
+    ]
+    for pattern in fragment_patterns:
+        match = re.search(pattern, q_lower)
+        if match and _is_plausible_resident_name_fragment(match.group(1)):
             return True
     return False
 
@@ -324,6 +469,113 @@ def _collection_query_for_metric(metric: str) -> str | None:
     return None
 
 
+def _latest_resident_name_set(chat_history: list[dict]) -> list[str]:
+    recent_history = _get_recent_meaningful_history(chat_history, limit=2)
+    for turn in reversed(recent_history):
+        user_text = str(turn.get("user", "")).lower()
+        ai_text = str(turn.get("ai", "")).lower()
+        if "residents in this community:" in ai_text:
+            continue
+        if re.search(
+            r"\b(?:all|list|show|display|get|give)\b.*\b(?:residents|patients)\b",
+            user_text,
+        ):
+            continue
+        combined_text = f"{turn.get('user', '')}\n{turn.get('ai', '')}"
+        candidates = _candidate_names_from_text(combined_text)
+        if len(candidates) >= 2:
+            return candidates
+    return []
+
+
+def _join_resident_names(names: list[str]) -> str:
+    if len(names) <= 1:
+        return names[0] if names else ""
+    if len(names) == 2:
+        return f"{names[0]} and {names[1]}"
+    return f"{', '.join(names[:-1])}, and {names[-1]}"
+
+
+def _metric_phrase(metric: str) -> str | None:
+    if metric == "all_metrics":
+        return "health metrics"
+    if metric == "bp":
+        return "blood pressure"
+    if metric == "sugar":
+        return "sugar level"
+    if metric == "steps":
+        return "step count"
+    if metric == "sleep_duration":
+        return "sleep duration"
+    if metric == "sleep_quality":
+        return "sleep quality score"
+    if metric == "sleep":
+        return "sleep metrics"
+    return None
+
+
+def _is_named_set_followup(q_lower: str, words: set[str]) -> bool:
+    if words.intersection({"these", "those", "them", "their", "theirs"}):
+        return True
+    return any(
+        phrase in q_lower
+        for phrase in [
+            "among these",
+            "among those",
+            "among them",
+            "of these",
+            "of those",
+            "from these",
+            "from those",
+            "between them",
+        ]
+    )
+
+
+def _rewrite_named_set_followup(new_query: str, chat_history: list[dict]) -> str | None:
+    q_lower = new_query.lower().strip()
+    words = {word.strip(".,?!") for word in q_lower.split()}
+    if not _is_named_set_followup(q_lower, words):
+        return None
+
+    resident_names = _latest_resident_name_set(chat_history)
+    if len(resident_names) < 2:
+        return None
+
+    joined_names = _join_resident_names(resident_names)
+
+    if re.search(r"\b(?:oldest|eldest|older|elder)\b", q_lower):
+        return f"Who is older among {joined_names}?"
+    if re.search(r"\b(?:youngest|younger)\b", q_lower):
+        return f"Who is younger among {joined_names}?"
+
+    if _contains_any_term(q_lower, _CARE_FOLLOWUP_TERMS):
+        return f"Which of {joined_names} needs more care?"
+
+    metric = _metric_from_query(q_lower)
+    metric_text = _metric_phrase(metric) if metric else None
+    if metric_text:
+        direction = _ranking_direction(q_lower)
+        if direction == "DESC":
+            return f"Which of {joined_names} has higher {metric_text}?"
+        if direction == "ASC":
+            return f"Which of {joined_names} has lower {metric_text}?"
+        return f"What is the {metric_text} of {joined_names}?"
+
+    if _contains_any_term(q_lower, ["age", "ages", "old"]):
+        return f"What are the ages of {joined_names}?"
+    if _contains_any_term(q_lower, ["flat", "flats", "room", "rooms"]):
+        return f"What are the room numbers of {joined_names}?"
+    if _contains_any_term(q_lower, ["medical history", "medical histories", "health history", "histories"]):
+        return f"What are the medical histories of {joined_names}?"
+    if _contains_any_term(q_lower, ["medication", "medications", "intake", "prescribed", "treatment"]):
+        return f"What are the prescribed medications of {joined_names}?"
+    if _contains_any_term(q_lower, ["detail", "details", "profile", "profiles", "info", "information"]):
+        return f"Give details of {joined_names}."
+
+    return None
+
+
 def _named_metric_query(resident_name: str, metric: str) -> str | None:
     if metric == "all_metrics":
         return f"What are {resident_name}'s health metrics?"
@@ -342,6 +594,32 @@ def _named_metric_query(resident_name: str, metric: str) -> str | None:
     return None
 
 
+def _named_metric_interpretation_query(resident_name: str, metric: str) -> str | None:
+    if metric == "bp":
+        return f"Is {resident_name}'s blood pressure good or bad?"
+    if metric == "sugar":
+        return f"Is {resident_name}'s sugar level good or bad?"
+    if metric == "steps":
+        return f"Is {resident_name}'s step count good or bad?"
+    if metric == "sleep_duration":
+        return f"Is {resident_name}'s sleep duration good or bad?"
+    if metric == "sleep_quality":
+        return f"Is {resident_name}'s sleep quality score good or bad?"
+    if metric == "sleep":
+        return f"Are {resident_name}'s sleep metrics good or bad?"
+    return None
+
+
+def _latest_single_resident_metric(chat_history: list[dict]) -> str | None:
+    recent_history = _get_recent_meaningful_history(chat_history, limit=2)
+    for turn in reversed(recent_history):
+        combined_text = f"{turn.get('user', '')}\n{turn.get('ai', '')}".lower()
+        metric = _metric_from_query(combined_text)
+        if metric:
+            return metric
+    return None
+
+
 def _is_metric_followup(q_lower: str, words: set[str]) -> bool:
     if _has_specific_name_in_query(q_lower):
         return False
@@ -355,6 +633,8 @@ def _is_metric_followup(q_lower: str, words: set[str]) -> bool:
         return False
     if not _metric_from_query(q_lower):
         return False
+    if words.intersection(_SINGLE_RESIDENT_FOLLOWUP_WORDS):
+        return True
     if any(phrase in q_lower for phrase in _FOLLOW_UP_PHRASES):
         return True
     return len(words) <= 4
@@ -364,6 +644,24 @@ def _is_explicit_resident_id_lookup(q_lower: str) -> bool:
     if not re.search(r"\b(?:resident|patient)\b", q_lower):
         return False
     return re.search(r"\b(?:id|number|no\.?|#)\s*(?:is\s*)?\d+\b", q_lower) is not None
+
+
+def _is_explicit_named_profile_lookup(query: str) -> bool:
+    q_lower = query.lower().strip()
+    if not _has_specific_name_in_query(query):
+        return False
+    return _contains_any_term(q_lower, _NAMED_PROFILE_LOOKUP_TERMS)
+
+
+def _is_self_contained_explanation_query(new_query: str) -> bool:
+    q_lower = new_query.lower().strip()
+    if not _GENERAL_EXPLANATION_START_RE.search(q_lower):
+        return False
+    if _has_specific_name_in_query(new_query):
+        return False
+    if re.search(r"\b(?:he|she|his|her|hers|him|they|them|their|theirs|this resident|that resident|same resident)\b", q_lower):
+        return False
+    return _contains_any_term(q_lower, _GENERAL_EXPLANATION_TERMS)
 
 
 def _rewrite_metric_followup_from_recent_context(new_query: str, chat_history: list[dict]) -> str | None:
@@ -376,6 +674,7 @@ def _rewrite_metric_followup_from_recent_context(new_query: str, chat_history: l
     if not metric:
         return None
 
+    has_single_resident_reference = bool(words.intersection(_SINGLE_RESIDENT_FOLLOWUP_WORDS))
     recent_history = _get_recent_meaningful_history(chat_history, limit=2)
     for turn in reversed(recent_history):
         previous_user = str(turn.get("user", "")).lower()
@@ -383,6 +682,8 @@ def _rewrite_metric_followup_from_recent_context(new_query: str, chat_history: l
         previous_context = f"{previous_user}\n{previous_ai}"
 
         if _turn_mentions_resident_collection(turn):
+            if has_single_resident_reference:
+                continue
             return _collection_query_for_metric(metric)
 
         if _is_ranking_or_superlative_query(previous_context):
@@ -425,8 +726,11 @@ def _rewrite_resident_collection_followup(new_query: str, chat_history: list[dic
     q_lower = new_query.lower().strip()
     words = {word.strip(".,?!") for word in q_lower.split()}
     has_plural_reference = bool(words.intersection(_PLURAL_RESIDENT_FOLLOWUP_WORDS))
+    has_single_resident_reference = bool(words.intersection(_SINGLE_RESIDENT_FOLLOWUP_WORDS))
     has_collection_context = _history_mentions_resident_collection(chat_history)
     if _has_specific_name_in_query(new_query):
+        return None
+    if has_single_resident_reference:
         return None
     if _is_ranking_or_superlative_query(q_lower):
         return None
@@ -473,10 +777,22 @@ def _is_plausible_resident_name(candidate: str) -> bool:
     return True
 
 
+def _is_plausible_resident_name_fragment(candidate: str) -> bool:
+    words = [word.strip(" .,?!():'\"").lower() for word in candidate.split()]
+    words = [word for word in words if word]
+    if len(words) != 1:
+        return False
+    word = words[0]
+    if len(word) < 2 or word in _NAME_STOPWORDS:
+        return False
+    return True
+
+
 def _candidate_names_from_text(text: str) -> list[str]:
     candidates: list[str] = []
 
     capitalized_patterns = [
+        r"\bName:\s*([A-Z][a-z]+(?:[ \t]+[A-Z][a-z]+){1,2})\b",
         r"\b([A-Z][a-z]+(?:[ \t]+[A-Z][a-z]+){1,2})(?=[ \t]+\(|'s\b|[ \t]+is\b|[ \t]+-)",
     ]
     lower_patterns = [
@@ -518,6 +834,15 @@ def _rewrite_single_resident_followup(new_query: str, chat_history: list[dict]) 
     resident_name = _latest_single_resident_name(chat_history)
     if not resident_name:
         return None
+
+    if _contains_any_term(q_lower, _CARE_FOLLOWUP_TERMS):
+        return f"Does {resident_name} need more care?"
+
+    if _contains_any_term(q_lower, _METRIC_INTERPRETATION_TERMS):
+        metric = _metric_from_query(q_lower) or _latest_single_resident_metric(chat_history)
+        interpretation_query = _named_metric_interpretation_query(resident_name, metric) if metric else None
+        if interpretation_query:
+            return interpretation_query
 
     if any(term in q_lower for term in ["health metrics", "all metrics", "vitals", "vital signs"]):
         return f"What are {resident_name}'s health metrics?"
@@ -597,6 +922,20 @@ def rewrite_query_with_memory(session_id: str, new_query: str) -> str:
 
     if _is_explicit_resident_id_lookup(q_lower):
         return new_query
+
+    if _is_explicit_named_profile_lookup(new_query):
+        return new_query
+
+    # Self-contained education questions can contain "it" inside the same
+    # sentence ("what is BP and how is it measured?"). Do not treat that as a
+    # memory follow-up to the previous resident.
+    if _is_self_contained_explanation_query(new_query):
+        return new_query
+
+    deterministic_rewrite = _rewrite_named_set_followup(new_query, chat_history)
+    if deterministic_rewrite:
+        logger.info(f"Query Refined deterministically: {deterministic_rewrite}")
+        return deterministic_rewrite
 
     deterministic_rewrite = _rewrite_metric_followup_from_recent_context(new_query, chat_history)
     if deterministic_rewrite:

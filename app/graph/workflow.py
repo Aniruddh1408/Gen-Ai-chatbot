@@ -28,6 +28,14 @@ _FOLLOW_UP_SPLIT_RE = re.compile(
     r"can|could|should|is|are|was|were|tell|show|give|list|explain)\b)",
     re.IGNORECASE,
 )
+_COMPOUND_METRIC_CONCEPT_RE = re.compile(
+    r"^\s*(?:what\s+(?:is|are)|explain|define)\s+(?:the\s+)?"
+    r"(?:bp|blood\s+pressure|sugar(?:\s+level)?|glucose(?:\s+level)?|"
+    r"steps?|step\s+count|sleep\s+duration)\b.*\s+and\s+how\s+"
+    r"(?:is|are|do|does)\s+(?:it|they|this|that)?\s*"
+    r"(?:measured|calculated|tracked|counted)\b",
+    re.IGNORECASE,
+)
 _MAX_SUB_QUERIES = 4
 
 _SIMPLE_REPHRASE_TERMS = [
@@ -141,6 +149,8 @@ def split_multi_question_query(query: str) -> list[str]:
     normalized = re.sub(r"\s+", " ", query).strip()
     if not normalized:
         return []
+    if _COMPOUND_METRIC_CONCEPT_RE.search(normalized):
+        return [normalized]
 
     question_mark_parts = [
         _clean_sub_query(part)

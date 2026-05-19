@@ -20,10 +20,12 @@ def is_current_community_query(query: str) -> bool:
         phrase in q
         for phrase in [
             "which community am i",
+            "where am i from",
             "what community am i",
             "which community data",
             "what community data",
             "current community",
+            "which community am i viewing",
             "community am i viewing",
             "community am i using",
             "which community am i from",

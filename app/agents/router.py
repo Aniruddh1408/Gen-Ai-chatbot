@@ -3,11 +3,8 @@ Router Agent - Unified intent dispatch and multi-retriever logic.
 """
 import re
 
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate
-
 from app.core.logger import get_logger
-from app.llm.client import ask_llm, llm
+from app.llm.client import ask_llm
 from app.retrievers.sql_retriever import handle_sql
 from app.retrievers.vector_retriever import handle_rag, has_relevant_documentation
 
@@ -16,17 +13,6 @@ logger = get_logger("router")
 
 def _contains_term(text: str, term: str) -> bool:
     return re.search(rf"\b{re.escape(term)}\b", text, re.IGNORECASE) is not None
-
-_classify_prompt = ChatPromptTemplate.from_messages([
-    ("system", """Determine query intent: SQL, RAG, or CHAT.
-- SQL: Metrics, residents, health data, comparisons.
-- RAG: Documentation, manuals, troubleshooting.
-- CHAT: Greetings, chat history, system info, general talk.
-Output one word only."""),
-    ("human", "{query}"),
-])
-
-_classify_chain = _classify_prompt | llm | StrOutputParser()
 
 # Heuristics for reliability
 FORCE_RAG_WORDS = [
@@ -120,15 +106,16 @@ ACKNOWLEDGEMENT_WORDS = [
     "thanks", "thank you", "noted", "sure", "yep", "yes",
 ]
 GREETING_RESPONSES = {
-    "hi": "Hello. Ask about residents, health metrics, or device issues.",
-    "hello": "Hello. Ask about residents, health metrics, or device issues.",
-    "hey": "Hello. Ask about residents, health metrics, or device issues.",
-    "help": "Ask about resident metrics, summaries, charts, or device troubleshooting.",
+    "hi": "Hello. Ask me anything. I can also help with residents, health metrics, and device issues.",
+    "hello": "Hello. Ask me anything. I can also help with residents, health metrics, and device issues.",
+    "hey": "Hello. Ask me anything. I can also help with residents, health metrics, and device issues.",
+    "help": "Ask a general question, or ask about resident metrics, summaries, charts, and device troubleshooting.",
 }
 
 _NAME_LOOKUP_RE = re.compile(r"\b[a-z]+(?:\s+[a-z]+){1,2}\b")
 
 _GENERIC_EXPLANATION_SQL_BLOCKERS = [
+    "community", "database", "record", "records", "resident record", "resident records",
     "resident", "residents", "patient", "patients", "age", "ages", "flat", "flats", "room", "rooms",
     "history", "histories", "intake", "prescribed", "prescription", "prescriptions",
     "treatment", "medication", "medications",
@@ -143,6 +130,76 @@ _GENERIC_EXPLANATION_SQL_BLOCKERS = [
     "compare", "comparison", "details", "detail", "record", "records",
     "more than", "less than", "higher than", "lower than",
 ]
+_GENERAL_CHAT_PROMPT = (
+    "You are a helpful ChatGPT-like assistant inside KuboCare. "
+    "Answer general questions naturally and clearly with depth and context. You can help with explanations, writing, planning, "
+    "summaries, and general knowledge. "
+    "Use recent conversation only to resolve pronouns or follow-ups; do not invent resident database values. "
+    "\n"
+    "For general clinical education questions about medicines, conditions, symptoms, or health concepts, "
+    "provide comprehensive, natural answers using your medical knowledge. Be clear and informative. "
+    "Include: what the condition/medicine is, common signs/uses, how it's typically managed, and when professional help is needed. "
+    "You can use 3-6 sentences or more for complex topics. "
+    "\n"
+    "CRITICAL SAFETY RULES:\n"
+    "- Do NOT diagnose, prescribe, or change doses.\n"
+    "- Do NOT provide personalized medical advice for any specific person.\n"
+    "- Do NOT claim this replaces professional medical judgment.\n"
+    "- Always remind users to consult their clinician for personal health decisions.\n"
+    "- For medicines: mention common uses, key safety notes, and the need to follow prescriber's instructions.\n"
+    "- For conditions: explain what it is, general management principles, and importance of professional evaluation.\n"
+    "\n"
+    "If the user asks for resident-specific data, say that should be checked from the resident records. "
+    "If you are unsure or the question needs current facts, say what you know and suggest checking an up-to-date source."
+)
+_GENERAL_CLINICAL_TERMS = [
+    # Common medications
+    "amlodipine", "aspirin", "atorvastatin", "calcium", "levothyroxine",
+    "metformin", "multivitamin", "paracetamol", "salbutamol", "telmisartan",
+    "antibiotic", "inhaler", "insulin", "medicine", "medication", "tablet",
+    # Common conditions and diseases
+    "arthritis", "asthma", "blood pressure", "bp", "cardiac", "cardiovascular",
+    "cholesterol", "diabetes", "fever", "glucose", "heart", "hypertension",
+    "osteoporosis", "pre-diabetes", "prediabetes", "stroke", "sugar",
+    "thyroid", "vital", "vitals",
+    # Additional common medical terms and conditions
+    "acid reflux", "acid reflux disease", "gerd", "heartburn", "indigestion",
+    "allergies", "allergy", "allergic", "hay fever", "rhinitis",
+    "anemia", "iron deficiency", "pernicious",
+    "anxiety", "depression", "dementia", "alzheimer", "cognitive",
+    "infection", "cold", "flu", "covid", "pneumonia", "bronchitis",
+    "migraine", "headache", "migraine headache",
+    "kidney", "renal", "liver", "cirrhosis", "hepatitis",
+    "cancer", "tumor", "leukemia",
+    "osteoarthritis", "rheumatoid arthritis", "joint",
+    "ulcer", "gastric", "peptic",
+    "eczema", "psoriasis", "dermatitis",
+    "copd", "emphysema", "chronic obstructive",
+    "syndrome", "syndrome x", "metabolic",
+    "obesity", "overweight", "bmi",
+    "sleep apnea", "apnea",
+    "contraception", "birth control",
+    "hormone", "thyroid", "hormone replacement",
+    "anticoagulant", "anticoagulation", "blood thinner",
+    "vaccine", "vaccination", "immunization",
+    "side effect", "side effects", "adverse",
+    "symptom", "symptoms", "sign", "signs",
+    "diagnosis", "diagnostic",
+    "treatment", "therapy", "therapeutic",
+    "surgery", "surgical",
+    "physical therapy", "rehabilitation",
+]
+_GENERAL_CLINICAL_DATA_BLOCKERS = [
+    "resident", "residents", "patient", "patients", "community", "database",
+    "record", "records", "room", "flat", "age", "chart", "graph", "average",
+    "avg", "highest", "lowest", "best", "worst", "top", "bottom", "list",
+    "show", "give", "which", "who has", "who takes", "who is taking",
+]
+_GENERAL_CLINICAL_PREFIXES = FORCE_CHAT_PREFIXES + [
+    "side effects", "uses of", "use of", "benefits of", "risks of",
+    "common side effects", "explain side effects",
+]
+_POSSESSIVE_NAME_RE = re.compile(r"\b[a-z]+(?:\s+[a-z]+){0,2}'s\b", re.IGNORECASE)
 _DOC_ROUTING_DISTANCE = 0.93
 _METRIC_CONCEPT_RE = re.compile(
     r"^\s*(?:what\s+(?:is|are|does)|explain|define|meaning\s+of)\s+"
@@ -151,6 +208,115 @@ _METRIC_CONCEPT_RE = re.compile(
     r"(?:\s+mean)?\??\s*$",
     re.IGNORECASE,
 )
+_METRIC_GUIDANCE_TRIGGERS = [
+    "ideal", "good", "normal", "healthy", "acceptable", "target",
+    "range", "baseline", "threshold", "concerning", "concern",
+    "low", "high", "poor", "reduced", "recommended", "should be",
+    "qualifies", "count as", "counts as", "best", "worst", "borderline", "elevated", "review signal",
+]
+_METRIC_GUIDANCE_DATA_BLOCKERS = [
+    "resident", "residents", "patient", "patients", "community", "database",
+    "record", "records", "list", "show", "give", "which resident", "who has",
+    "average", "avg", "highest", "lowest", "top", "bottom", "compare",
+    "comparison", "chart", "graph",
+]
+
+_METRIC_BASELINES = {
+    "sleep_score": (
+        "Sleep quality score",
+        [
+            "80-100: good/ideal",
+            "60-79: acceptable, but needs to improve if below 80",
+            "50-59: borderline; review with sleep duration and other metrics",
+            "below 50: low score and concerning, needs attention",
+        ],
+        "The sleep quality score is a composite metric influenced by duration, interruptions, restlessness, and consistency. Use it as a screening signal, then confirm with sleep duration and activity levels.",
+    ),
+    "sleep_duration": (
+        "Sleep duration",
+        [
+            "7-9 hours is a common adult target; many older adults do well around 7-8 hours",
+            "6-7 hours: watch trend and context",
+            "below 6 hours: reduced in this project",
+            "below 5 hours: short/concerning, needs care and attention.",
+        ],
+        "Read sleep duration together with sleep quality score, activity, and recent health readings.",
+    ),
+    "bp": (
+        "Blood pressure",
+        [
+            "around 120/80 mmHg: normal reference point, optimal for many adults",
+            "130-139 systolic or 85-89 diastolic: borderline, watch trends",
+            "140+ systolic or 90+ diastolic: elevated/high, needs care",
+            "160+ systolic or 100+ diastolic: very high, need to be monitored",
+        ],
+        "BP targets can differ by person and care plan, so use this as a review threshold, not a diagnosis.",
+    ),
+    "sugar": (
+        "Sugar/glucose level",
+        [
+            "fasting below 100: normal reference point",
+            "100-125: borderline/prediabetes range",
+            "126+ fasting or 140+ in this project: high review signal",
+            "180+: very high, needs attention and monitoring",
+        ],
+        "Interpret sugar with meal timing, diabetes status, medication, and the resident's care plan.",
+    ),
+    "steps": (
+        "Step count/activity",
+        [
+            "there is no single ideal step count for every older adult",
+            "3500+ steps: not flagged as low, generally more active",
+            "2500-3499 steps: reduced activity signal",
+            "below 2500 steps: low activity signal",
+        ],
+        "Confirm device wear/sync before treating a low step count as a care issue.",
+    ),
+}
+
+_CARE_GUIDANCE_TRIGGERS = [
+    "what is", "what does", "what do", "explain", "define", "meaning of",
+    "how is", "how are", "calculated", "calculate", "computed", "compute",
+    "why score", "score mean", "score means", "priority mean", "priority means",
+]
+_CARE_GUIDANCE_DATA_BLOCKERS = [
+    "who", "which resident", "which patient", "list", "show", "give details",
+    "details of", "information on", "information about", "compare", "older", "younger",
+    "oldest", "youngest", "higher", "lower", "highest", "lowest", "most care",
+    "more care", "least care", "less care", "needs care", "need care",
+    "require care", "requires care",
+]
+_CARE_SCORE_RULES = [
+    "Age: 75+ adds 1 point; 85+ adds 2 points.",
+    "BP: 130/85+ adds 1; 140/90+ adds 2; 160/100+ adds 3.",
+    "Sugar/glucose: 125+ adds 1; 140+ adds 2; 180+ adds 3.",
+    "Sleep score: below 60 adds 1; below 50 adds 2.",
+    "Sleep duration: below 6 hours adds 1; below 5 hours adds 2.",
+    "Steps: below 3500 adds 1; below 2500 adds 2.",
+    "Medical history keywords such as diabetes, hypertension, cardiac/cardiovascular, post-surgery, asthma, or osteoporosis add 1 point each.",
+]
+_CLINICAL_CONCEPT_ANSWERS = [
+    (
+        ["bp", "blood pressure"],
+        "BP means blood pressure. It is the pressure of blood pushing against artery walls, usually written as systolic/diastolic, for example 120/80 mmHg. It is commonly measured with a BP cuff or validated monitor. High or very low readings should be interpreted with the resident's care plan and clinician guidance.",
+    ),
+    (
+        ["sugar", "glucose", "sugar level", "glucose level"],
+        "Sugar level means blood glucose, the amount of glucose in the blood. It is usually measured with a glucometer, lab test, or recorded clinical reading. The result depends on meal timing, diabetes status, medicines, and the resident's care plan.",
+    ),
+    (
+        ["diabetes"],
+        "Diabetes is a condition where blood glucose stays too high because the body does not make enough insulin or cannot use insulin well. It is managed with a clinician-directed plan that may include diet, activity, monitoring, and medication. This is general information, not a diagnosis.",
+    ),
+    (
+        ["hypertension"],
+        "Hypertension means persistently high blood pressure. It can increase the risk of heart, kidney, brain, and blood vessel problems over time. Management should follow a clinician's plan and recorded readings should be reviewed in context.",
+    ),
+    (
+        ["steps", "step count", "activity steps"],
+        "Step count is an activity metric that estimates how many steps a person took, usually from a wearable or motion-tracking device. In KuboCare it is used as a mobility/activity signal, but a low value can also mean the device was not worn or did not sync.",
+    ),
+]
 
 
 def _looks_like_resident_lookup(query: str) -> bool:
@@ -178,6 +344,21 @@ def _looks_like_generic_explanatory_query(query: str) -> bool:
     return True
 
 
+def _looks_like_general_clinical_education_query(query: str) -> bool:
+    q = query.lower().strip()
+    if not any(q.startswith(prefix) for prefix in _GENERAL_CLINICAL_PREFIXES):
+        return False
+    if _looks_like_resident_lookup(q) or _POSSESSIVE_NAME_RE.search(q) or _has_named_metric_hint(q):
+        return False
+    for blocker in _GENERAL_CLINICAL_DATA_BLOCKERS:
+        if " " in blocker:
+            if blocker in q:
+                return False
+        elif _contains_term(q, blocker):
+            return False
+    return any(_contains_term(q, term) for term in _GENERAL_CLINICAL_TERMS)
+
+
 def _looks_like_clear_sql_query(query: str) -> bool:
     q = query.lower().strip()
     if DEVICE_ID_RE.search(q):
@@ -197,6 +378,148 @@ def _looks_like_unambiguous_documentation_query(query: str) -> bool:
 
 def _looks_like_metric_concept_query(query: str) -> bool:
     return _METRIC_CONCEPT_RE.search(query) is not None
+
+
+def _metric_guidance_keys(query: str) -> list[str]:
+    q = query.lower().strip()
+    keys: list[str] = []
+    if any(term in q for term in ["sleep quality", "sleep score", "sleep scores"]):
+        keys.append("sleep_score")
+    if any(term in q for term in ["sleep duration", "sleep time", "hours of sleep", "sleep hours"]):
+        keys.append("sleep_duration")
+    if any(_contains_term(q, term) for term in ["bp", "blood pressure"]):
+        keys.append("bp")
+    if any(_contains_term(q, term) for term in ["sugar", "glucose"]):
+        keys.append("sugar")
+    if any(term in q for term in ["step count", "steps", "activity"]):
+        keys.append("steps")
+    if any(term in q for term in ["all metrics", "other metrics", "health metrics", "vitals", "vital signs"]):
+        keys = ["sleep_score", "sleep_duration", "bp", "sugar", "steps"]
+    return list(dict.fromkeys(keys))
+
+
+def _has_named_metric_hint(query: str) -> bool:
+    q = query.lower().strip()
+    if _POSSESSIVE_NAME_RE.search(q):
+        return True
+    metric_word = r"(?:sleep|bp|blood\s+pressure|sugar|glucose|steps?|step\s+count|activity)"
+    named_match = re.search(rf"\b(?:is|are)\s+([a-z]+)\s+{metric_word}\b", q)
+    if named_match and named_match.group(1) not in _METRIC_GUIDANCE_TRIGGERS:
+        return True
+    named_match = re.search(rf"\b(?:for|of)\s+([a-z]+)\s+{metric_word}\b", q)
+    if named_match and named_match.group(1) not in _METRIC_GUIDANCE_TRIGGERS:
+        return True
+    named_match = re.search(rf"\b{metric_word}\s+(?:for|of)\s+([a-z]+(?:\s+[a-z]+){{0,2}})\b", q)
+    if named_match:
+        return True
+    return False
+
+
+def _looks_like_metric_guidance_query(query: str) -> bool:
+    q = query.lower().strip()
+    if not _metric_guidance_keys(q):
+        return False
+    if _has_named_metric_hint(q):
+        return False
+    for blocker in _METRIC_GUIDANCE_DATA_BLOCKERS:
+        if " " in blocker:
+            if blocker in q:
+                return False
+        elif _contains_term(q, blocker):
+            return False
+    return any(trigger in q for trigger in _METRIC_GUIDANCE_TRIGGERS)
+
+
+def _metric_guidance_answer(query: str) -> str | None:
+    if not _looks_like_metric_guidance_query(query):
+        return None
+
+    keys = _metric_guidance_keys(query)
+    if not keys:
+        return None
+
+    lines = ["KuboCare metric guide:"]
+    for key in keys:
+        title, thresholds, note = _METRIC_BASELINES[key]
+        lines.append(f"{title}:")
+        for threshold in thresholds:
+            lines.append(f"- {threshold}")
+        lines.append(f"Note: {note}")
+    lines.append("These are screening thresholds for review and prioritization, not a diagnosis or personalized medical advice.")
+    return "\n".join(lines)
+
+
+def _looks_like_care_guidance_query(query: str) -> bool:
+    q = query.lower().strip()
+    care_terms = [
+        "care score", "priority score", "score in high priority", "high priority",
+        "moderate priority", "routine priority", "care priority",
+    ]
+    has_score_number = re.search(r"\bscore\s+\d+\b", q) is not None
+    has_care_term = any(term in q for term in care_terms) or has_score_number
+    if not has_care_term:
+        return False
+
+    if q.startswith("why is ") and not has_score_number:
+        return False
+
+    for blocker in _CARE_GUIDANCE_DATA_BLOCKERS:
+        if blocker in q and not has_score_number:
+            return False
+
+    return any(trigger in q for trigger in _CARE_GUIDANCE_TRIGGERS) or has_score_number
+
+
+def _care_guidance_answer(query: str) -> str | None:
+    if not _looks_like_care_guidance_query(query):
+        return None
+
+    q = query.lower().strip()
+    lines = [
+        "KuboCare care priority guide:",
+        "Care score is a data-prioritization heuristic from recorded resident values, not a diagnosis.",
+        "Higher score means more review signals are present.",
+        "Priority bands:",
+        "- High priority: score >= 9",
+        "- Moderate priority: score 5-8",
+        "- Routine priority: score 0-4",
+    ]
+
+    score_match = re.search(r"\bscore\s+(\d+)\b", q)
+    if score_match:
+        score = int(score_match.group(1))
+        if score >= 9:
+            band = "High priority"
+        elif score >= 5:
+            band = "Moderate priority"
+        else:
+            band = "Routine priority"
+        lines.append(f"Score {score} falls in {band}.")
+        if score >= 9:
+            lines.append("For example, score 12 means several strong signals stacked together, so that resident should be reviewed before lower-priority residents.")
+
+    lines.append("How points are added:")
+    lines.extend(f"- {rule}" for rule in _CARE_SCORE_RULES)
+    lines.append("Use the score to prioritize review and follow-up; clinical decisions should still follow the resident's care plan and professional judgment.")
+    return "\n".join(lines)
+
+
+def _clinical_concept_answer(query: str) -> str | None:
+    q = query.lower().strip()
+    if not any(q.startswith(prefix) for prefix in _GENERAL_CLINICAL_PREFIXES):
+        return None
+    if _looks_like_resident_lookup(q) or _POSSESSIVE_NAME_RE.search(q) or _has_named_metric_hint(q):
+        return None
+    for blocker in _GENERAL_CLINICAL_DATA_BLOCKERS:
+        if " " in blocker:
+            if blocker in q:
+                return None
+        elif _contains_term(q, blocker):
+            return None
+    for terms, answer in _CLINICAL_CONCEPT_ANSWERS:
+        if any(_contains_term(q, term) for term in terms):
+            return answer
+    return None
 
 
 def _format_chat_history(chat_history: list[dict] | None, limit: int = 3) -> str:
@@ -221,16 +544,28 @@ def classify_intent(query: str) -> str:
     if _looks_like_unambiguous_documentation_query(q):
         return "RAG"
 
+    if _looks_like_general_clinical_education_query(q):
+        return "CHAT"
+
+    if _looks_like_metric_guidance_query(q):
+        return "CHAT"
+
+    if _looks_like_care_guidance_query(q):
+        return "CHAT"
+
+    if _clinical_concept_answer(q):
+        return "CHAT"
+
     if _looks_like_metric_concept_query(q):
         return "RAG"
+
+    if _looks_like_generic_explanatory_query(q):
+        return "CHAT"
 
     # Data questions win before generic "what is / who is" handling. This keeps
     # resident follow-ups such as "what are their ages?" in SQL.
     if _looks_like_clear_sql_query(q):
         return "SQL"
-
-    if _looks_like_generic_explanatory_query(q):
-        return "RAG"
 
     if any(_contains_term(q, word) for word in FORCE_RAG_WORDS):
         return "RAG"
@@ -241,15 +576,9 @@ def classify_intent(query: str) -> str:
     if any(q.startswith(prefix) for prefix in FORCE_CHAT_PREFIXES):
         return "CHAT"
 
-    try:
-        ans = _classify_chain.invoke({"query": query}).strip().upper()
-        if "SQL" in ans:
-            return "SQL"
-        if "CHAT" in ans:
-            return "CHAT"
-        return "RAG"
-    except Exception:
-        return "SQL"
+    # ChatGPT-like behavior: SQL and RAG are specialized routes; everything
+    # else should remain a normal assistant conversation instead of failing.
+    return "CHAT"
 
 
 def route_query(
@@ -259,9 +588,26 @@ def route_query(
     *,
     community_id: int,
 ) -> dict:
-    intent = classify_intent(query)
     raw_query = (original_query or query).strip()
     q_lower = raw_query.lower().strip()
+    guidance_answer = _metric_guidance_answer(raw_query)
+    if guidance_answer:
+        return {
+            "query": query,
+            "plan": {"macro": "metric_guidance"},
+            "answer": guidance_answer,
+        }
+    care_guidance_answer = _care_guidance_answer(raw_query)
+    if care_guidance_answer:
+        return {
+            "query": query,
+            "plan": {"macro": "care_score_guidance"},
+            "answer": care_guidance_answer,
+        }
+    # Medical concept questions now route to LLM (CHAT) instead of hardcoded answers
+    # for more comprehensive, ChatGPT-like responses with external medical knowledge
+
+    intent = classify_intent(query)
 
     if intent == "CHAT":
         if q_lower in ACKNOWLEDGEMENT_WORDS:
@@ -276,12 +622,9 @@ def route_query(
 
             answer = ask_llm(
                 chat_input,
-                system_prompt=(
-                    "You are a Healthcare AI. Use the recent conversation to resolve follow-up messages naturally. "
-                    "Answer clearly and concisely by default. For simple questions, keep the answer to 2-4 sentences "
-                    "unless the user asks for detail. If the current message is too vague and the recent context does "
-                    "not clearly determine the topic, ask a short clarification question."
-                ),
+                system_prompt=_GENERAL_CHAT_PROMPT,
+                num_predict=220,
+                temperature=0.0,
             )
             return {"query": query, "answer": answer}
         except Exception as e:
