@@ -72,12 +72,45 @@ _SIMPLE_REPHRASE_TERMS = [
 ]
 
 _POINT_REPHRASE_TERMS = [
+    "give it in points",
+    "give this in points",
+    "give that in points",
+    "give it as points",
+    "give this as points",
+    "give that as points",
+    "give it in bullets",
+    "give this in bullets",
+    "give that in bullets",
+    "give it as bullets",
+    "give this as bullets",
+    "give that as bullets",
+    "give it in bullet points",
+    "give this in bullet points",
+    "give that in bullet points",
     "tell it in points",
     "explain in points",
     "make it points",
+    "make it bullets",
+    "make this bullets",
     "bullet points",
+    "bullets",
     "pointwise",
     "step by step",
+]
+
+_FORMAT_REPHRASE_TERMS = [
+    "give it in a neat form",
+    "give this in a neat form",
+    "give that in a neat form",
+    "give it in neat form",
+    "give this in neat form",
+    "give that in neat form",
+    "make it neat",
+    "make this neat",
+    "format it neatly",
+    "format this neatly",
+    "neat format",
+    "neat form",
 ]
 
 _SHORT_REPHRASE_TERMS = [
@@ -103,6 +136,7 @@ _DETAIL_FOLLOWUP_TERMS = [
 _TRANSFORM_ONLY_TERMS = set(
     _SIMPLE_REPHRASE_TERMS
     + _POINT_REPHRASE_TERMS
+    + _FORMAT_REPHRASE_TERMS
     + _SHORT_REPHRASE_TERMS
     + _DETAIL_FOLLOWUP_TERMS
 )
@@ -192,7 +226,7 @@ def _format_multi_query_answer(responses: list[dict]) -> str:
 def _detect_transform_style(query: str) -> str | None:
     q_lower = query.lower().strip()
 
-    if any(term in q_lower for term in _POINT_REPHRASE_TERMS):
+    if any(term in q_lower for term in _POINT_REPHRASE_TERMS + _FORMAT_REPHRASE_TERMS):
         return "points"
 
     if any(term in q_lower for term in _SHORT_REPHRASE_TERMS):
@@ -333,7 +367,7 @@ def transform_previous_answer_node(state: ChatGraphState) -> ChatGraphState:
     answer = ask_llm(
         f"Previous answer:\n{previous_answer}",
         system_prompt=transform_prompt,
-        num_predict=180,
+        num_predict=500,
         temperature=0.0,
     )
 

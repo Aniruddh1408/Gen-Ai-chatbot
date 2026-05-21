@@ -114,7 +114,8 @@ _DOMAIN_QUERY_RE = re.compile("|".join(_DOMAIN_QUERY_PATTERNS), re.IGNORECASE)
 
 _GENERAL_MEDICAL_QUESTION_RE = re.compile(
     r"\b(?:what\s+(?:is|are)|explain|define|meaning\s+of|how\s+(?:does|do)|"
-    r"why\s+(?:does|do|is|are)|side\s+effects?|uses?\s+of|benefits?\s+of|risks?\s+of)\b"
+    r"how\s+(?:is|are|can|should|to)|why\s+(?:does|do|is|are)|"
+    r"side\s+effects?|uses?\s+of|benefits?\s+of|risks?\s+of)\b"
     r".*\b(?:amlodipine|aspirin|atorvastatin|calcium|levothyroxine|metformin|"
     r"multivitamin|paracetamol|salbutamol|telmisartan|antibiotic|inhaler|"
     r"insulin|medicine|medication|tablet|arthritis|asthma|blood pressure|bp|"

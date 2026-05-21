@@ -21,6 +21,10 @@ _DOC_GUARDRAIL_DISTANCE = 0.93
 _DOCS_DIR = Path("data/docs")
 
 
+def _contains_term(text: str, term: str) -> bool:
+    return re.search(rf"\b{re.escape(term)}\b", text, re.IGNORECASE) is not None
+
+
 def get_embedding(text: str) -> list[float] | None:
     """Get embedding vector from the configured embedding backend."""
     try:
@@ -137,6 +141,83 @@ _POINT_FORMAT_TERMS = [
 ]
 
 
+def _looks_like_kubocare_product_query(query: str) -> bool:
+    q = query.lower().strip()
+    if "kubocare" in q or "kubo care" in q:
+        return True
+    return (
+        any(_contains_term(q, term) for term in ["device", "devices", "sensor", "sensors"])
+        and any(term in q for term in ["wearable", "camera", "radar", "frequency", "fall detection"])
+    )
+
+
+def _kubocare_direct_answer(query: str) -> str | None:
+    if not _looks_like_kubocare_product_query(query):
+        return None
+
+    q = query.lower().strip()
+
+    if "wearable" in q or "wearables" in q:
+        return (
+            "No. KuboCare devices are non-wearable.\n"
+            "- They use room-based radar sensing, so residents do not need to wear, charge, or press a device.\n"
+            "- The system is also camera-free and does not rely on video images.\n"
+            "- It is designed for passive safety and wellness monitoring in senior care."
+        )
+
+    if "camera" in q or "cameras" in q:
+        return (
+            "KuboCare is designed to be camera-free.\n"
+            "- It uses radar-based sensing instead of video monitoring.\n"
+            "- This helps monitor private spaces without recording images.\n"
+            "- The software platform may still process account, device, and operational data under KuboCare's privacy policy."
+        )
+
+    if "frequency" in q or "ghz" in q or "mmwave" in q or "millimeter" in q:
+        return (
+            "KuboCare does not publicly specify the exact radar frequency in the reviewed documentation.\n"
+            "- Public material describes the device as using millimeter-wave radar.\n"
+            "- Common industrial mmWave radar sensors often operate around 60 GHz.\n"
+            "- Do not treat 60 GHz as KuboCare's exact frequency unless an official KuboCare device specification confirms it."
+        )
+
+    if "privacy" in q or "security" in q:
+        return (
+            "KuboCare's sensing model is privacy-first because it avoids cameras and wearables.\n"
+            "- It uses radar-based sensing instead of video images.\n"
+            "- Residents do not need to wear or press a device.\n"
+            "- The software platform may still process account, device, and operational data under KuboCare's privacy policy."
+        )
+
+    if "safety" in q or "safe" in q or "power" in q or "emission" in q:
+        return (
+            "KuboCare publicly describes its radar sensing as low-power and non-contact.\n"
+            "- The product material says the radar operates around 1-10 mW.\n"
+            "- It is camera-free and does not require body contact.\n"
+            "- Regulatory or medical safety claims should be checked against the official device specification."
+        )
+
+    if "fall" in q or "radar" in q:
+        return (
+            "KuboCare uses radar-based sensing and AI for fall detection.\n"
+            "- It monitors motion patterns linked to bed falls, seated falls, and standing falls.\n"
+            "- It does not require a wearable and does not use camera video.\n"
+            "- Alerts are sent through the caregiver and family care platform."
+        )
+
+    if "what does" in q or "what do" in q or "what is" in q or "capabilities" in q or "features" in q:
+        return (
+            "KuboCare is an ambient AI health monitoring platform for senior care.\n"
+            "- Detects falls and fall-risk events.\n"
+            "- Monitors movement, activity, sleep, and room conditions.\n"
+            "- Tracks contactless vitals such as heart rate and respiratory rate.\n"
+            "- Uses radar-based, camera-free, non-wearable sensing.\n"
+            "- Sends alerts and insights to caregivers and family through dashboards and the mobile app."
+        )
+
+    return None
+
+
 def _wants_point_format(query: str) -> bool:
     q_lower = query.lower()
     return any(term in q_lower for term in _POINT_FORMAT_TERMS)
@@ -247,6 +328,10 @@ def _load_section_from_local_docs(headings: list[str]) -> str | None:
 
 
 def _section_document_answer(query: str, context: str) -> str | None:
+    kubocare_answer = _kubocare_direct_answer(query)
+    if kubocare_answer:
+        return kubocare_answer
+
     q_lower = query.lower()
     for triggers, headings in _SECTION_PATTERNS:
         if any(trigger in q_lower for trigger in triggers):
@@ -280,6 +365,14 @@ def _fallback_document_answer(query: str, context: str) -> str:
 
 def handle_rag(query: str) -> dict:
     """Full RAG pipeline: embed query -> pgvector search -> LLM answer."""
+    kubocare_answer = _kubocare_direct_answer(query)
+    if kubocare_answer:
+        return {
+            "query": query,
+            "retrieved_context": "local KuboCare product documentation",
+            "answer": kubocare_answer,
+        }
+
     local_answer = _section_document_answer(query, "")
     if local_answer:
         return {

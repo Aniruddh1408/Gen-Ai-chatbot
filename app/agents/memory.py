@@ -14,6 +14,7 @@ except Exception:
 
 from app.llm.client import ask_llm
 from app.core.config import REDIS_HOST, REDIS_PORT, REDIS_DB
+from app.core.community import LOCAL_DEMO_COMMUNITIES
 from app.core.logger import get_logger
 
 logger = get_logger("memory")
@@ -253,8 +254,8 @@ _SINGLE_RESIDENT_FOLLOWUP_WORDS = {
 }
 _NAME_STOPWORDS = {
     "resident", "patient", "residents", "patients", "medical", "history",
-    "health", "metrics", "blood", "pressure", "sleep", "quality", "sugar",
-    "level", "step", "count", "latest", "details", "information", "about",
+    "health", "metrics", "blood", "pressure", "bp", "sleep", "quality", "sugar",
+    "level", "step", "count", "latest", "current", "details", "information", "about",
     "room", "flat", "age", "ages", "years", "community", "records",
     "what", "which", "who", "whom", "whose", "where", "when", "why", "how",
     "is", "are", "was", "were", "be", "being", "been", "do", "does", "did",
@@ -262,6 +263,8 @@ _NAME_STOPWORDS = {
     "he", "she", "it", "its", "this", "that", "these", "those", "all", "same",
     "and", "or",
     "list", "show", "give", "tell", "get", "me", "please", "on",
+    "check", "review", "compare", "confirm", "use", "prioritize",
+    "average", "avg", "mean",
 }
 
 _COLLECTION_FOLLOWUP_METRIC_TERMS = [
@@ -309,6 +312,13 @@ _RANKING_OR_SUPERLATIVE_TERMS = [
 _AGGREGATE_TERMS = [
     "average", "avg", "mean", "total", "count", "how many", "number of",
 ]
+_KNOWN_COMMUNITY_NAMES = {
+    name.lower()
+    for name in LOCAL_DEMO_COMMUNITIES.values()
+}
+_CURRENT_METRIC_TERMS = [
+    "current", "latest", "today", "now", "recent",
+]
 
 _COLLECTION_AI_MARKERS = [
     "residents in this community:",
@@ -332,6 +342,23 @@ def _contains_term(text: str, term: str) -> bool:
 
 def _contains_any_term(text: str, terms: list[str]) -> bool:
     return any(_contains_term(text, term) for term in terms)
+
+
+def _mentions_current_community_reference(text: str) -> bool:
+    q_lower = text.lower()
+    return any(
+        phrase in q_lower
+        for phrase in [
+            "this community",
+            "current community",
+            "selected community",
+            "viewing community",
+        ]
+    )
+
+
+def _is_known_community_name(candidate: str) -> bool:
+    return candidate.lower().strip(" .,?!") in _KNOWN_COMMUNITY_NAMES
 
 
 def _turn_mentions_resident_collection(turn: dict) -> bool:
@@ -594,6 +621,20 @@ def _named_metric_query(resident_name: str, metric: str) -> str | None:
     return None
 
 
+def _named_average_metric_query(resident_name: str, metric: str) -> str | None:
+    if metric == "bp":
+        return f"What is {resident_name}'s average blood pressure?"
+    if metric == "sugar":
+        return f"What is {resident_name}'s average sugar level?"
+    if metric == "steps":
+        return f"What is {resident_name}'s average step count?"
+    if metric == "sleep_duration":
+        return f"What is {resident_name}'s average sleep duration?"
+    if metric == "sleep_quality":
+        return f"What is {resident_name}'s average sleep quality score?"
+    return None
+
+
 def _named_metric_interpretation_query(resident_name: str, metric: str) -> str | None:
     if metric == "bp":
         return f"Is {resident_name}'s blood pressure good or bad?"
@@ -607,6 +648,20 @@ def _named_metric_interpretation_query(resident_name: str, metric: str) -> str |
         return f"Is {resident_name}'s sleep quality score good or bad?"
     if metric == "sleep":
         return f"Are {resident_name}'s sleep metrics good or bad?"
+    return None
+
+
+def _named_average_metric_interpretation_query(resident_name: str, metric: str) -> str | None:
+    if metric == "bp":
+        return f"Is {resident_name}'s average blood pressure good or bad?"
+    if metric == "sugar":
+        return f"Is {resident_name}'s average sugar level good or bad?"
+    if metric == "steps":
+        return f"Is {resident_name}'s average step count good or bad?"
+    if metric == "sleep_duration":
+        return f"Is {resident_name}'s average sleep duration good or bad?"
+    if metric == "sleep_quality":
+        return f"Is {resident_name}'s average sleep quality score good or bad?"
     return None
 
 
@@ -691,7 +746,11 @@ def _rewrite_metric_followup_from_recent_context(new_query: str, chat_history: l
             if direction:
                 return _ranking_query_for_metric(metric, direction)
 
-        if _contains_any_term(previous_user, _AGGREGATE_TERMS):
+        if (
+            _contains_any_term(previous_user, _AGGREGATE_TERMS)
+            and not has_single_resident_reference
+            and not _contains_any_term(q_lower, _CURRENT_METRIC_TERMS)
+        ):
             return _average_query_for_metric(metric)
 
         previous_candidates = _candidate_names_from_text(f"{turn.get('user', '')}\n{turn.get('ai', '')}")
@@ -810,7 +869,7 @@ def _candidate_names_from_text(text: str) -> list[str]:
 
     unique: list[str] = []
     for candidate in candidates:
-        if _is_plausible_resident_name(candidate) and candidate not in unique:
+        if _is_plausible_resident_name(candidate) and not _is_known_community_name(candidate) and candidate not in unique:
             unique.append(candidate)
     return unique
 
@@ -838,9 +897,23 @@ def _rewrite_single_resident_followup(new_query: str, chat_history: list[dict]) 
     if _contains_any_term(q_lower, _CARE_FOLLOWUP_TERMS):
         return f"Does {resident_name} need more care?"
 
+    if _contains_any_term(q_lower, _AGGREGATE_TERMS):
+        metric = _metric_from_query(q_lower) or _latest_single_resident_metric(chat_history)
+        average_query = _named_average_metric_query(resident_name, metric) if metric else None
+        if average_query:
+            return average_query
+
     if _contains_any_term(q_lower, _METRIC_INTERPRETATION_TERMS):
         metric = _metric_from_query(q_lower) or _latest_single_resident_metric(chat_history)
-        interpretation_query = _named_metric_interpretation_query(resident_name, metric) if metric else None
+        recent_history = _get_recent_meaningful_history(chat_history, limit=1)
+        previous_user = str(recent_history[-1].get("user", "")).lower() if recent_history else ""
+        previous_ai = str(recent_history[-1].get("ai", "")).lower() if recent_history else ""
+        previous_was_average = _contains_any_term(f"{previous_user}\n{previous_ai}", _AGGREGATE_TERMS)
+        interpretation_query = (
+            _named_average_metric_interpretation_query(resident_name, metric)
+            if metric and previous_was_average
+            else _named_metric_interpretation_query(resident_name, metric) if metric else None
+        )
         if interpretation_query:
             return interpretation_query
 
@@ -918,6 +991,9 @@ def rewrite_query_with_memory(session_id: str, new_query: str) -> str:
     # Skip rewriting conversational acknowledgements and greetings.
     q_lower = new_query.lower().strip()
     if len(q_lower.split()) <= 3 and _SHORT_CHAT_RE.search(q_lower):
+        return new_query
+
+    if _mentions_current_community_reference(new_query):
         return new_query
 
     if _is_explicit_resident_id_lookup(q_lower):

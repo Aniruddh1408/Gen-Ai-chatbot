@@ -27,7 +27,7 @@ CREATE TABLE residents (
 
 -- Clinical health readings linked to a resident.
 -- Community isolation is resolved through residents.community_id.
-CREATE TABLE health_reports (
+CREATE TABLE health_reports (  
     resident_id INTEGER,
     bp_systolic INTEGER,
     bp_diastolic INTEGER,
@@ -154,7 +154,7 @@ VALUES
 (15, 3, 'Sanjay Trivedi', 'C-305', 79, 'Pre-diabetes and lifestyle monitoring', 'Diet and exercise plan');
 
 
--- Seed one health reading per resident.
+-- Seed latest/current health reading per resident.
 INSERT INTO health_reports (resident_id, bp_systolic, bp_diastolic, sugar_level, recorded_at) VALUES
 (1, 148, 92, 182.5, '2026-04-18 08:30:00'),
 (2, 132, 84, 118.0, '2026-04-18 09:00:00'),
@@ -175,7 +175,36 @@ INSERT INTO health_reports (resident_id, bp_systolic, bp_diastolic, sugar_level,
 (15, 145, 90, 142.8, '2026-04-18 10:30:00');
 
 
--- Seed one activity reading per resident.
+-- Add 19 prior daily health readings per resident.
+-- Together with the latest/current row above, this gives 20 days of health history.
+WITH generated_health AS (
+    SELECT
+        h.resident_id,
+        GREATEST(90, h.bp_systolic + (((h.resident_id + gs.day_offset) % 5) - 2))::integer AS bp_systolic,
+        GREATEST(55, h.bp_diastolic + (((h.resident_id * 2 + gs.day_offset) % 5) - 2))::integer AS bp_diastolic,
+        ROUND((h.sugar_level + ((((h.resident_id * 2 + gs.day_offset) % 9) - 4) * 2.3))::numeric, 1) AS sugar_level,
+        h.recorded_at - (gs.day_offset || ' days')::interval AS recorded_at
+    FROM health_reports h
+    CROSS JOIN generate_series(1, 19) AS gs(day_offset)
+    WHERE h.recorded_at::date = DATE '2026-04-18'
+)
+INSERT INTO health_reports (resident_id, bp_systolic, bp_diastolic, sugar_level, recorded_at)
+SELECT
+    g.resident_id,
+    g.bp_systolic,
+    g.bp_diastolic,
+    g.sugar_level,
+    g.recorded_at
+FROM generated_health g
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM health_reports existing
+    WHERE existing.resident_id = g.resident_id
+      AND existing.recorded_at = g.recorded_at
+);
+
+
+-- Seed latest/current activity reading per resident.
 INSERT INTO activity_metrics (resident_id, steps_count, recorded_at) VALUES
 (1, 3200, '2026-04-18 20:00:00'),
 (2, 4100, '2026-04-18 20:00:00'),
@@ -196,7 +225,32 @@ INSERT INTO activity_metrics (resident_id, steps_count, recorded_at) VALUES
 (15, 2600, '2026-04-18 20:00:00');
 
 
--- Seed one sleep reading per resident.
+-- Add 19 prior daily activity readings per resident.
+-- Together with the latest/current row above, this gives 20 days of activity history.
+WITH generated_activity AS (
+    SELECT
+        a.resident_id,
+        GREATEST(500, a.steps_count + ((((a.resident_id * 3 + gs.day_offset) % 7) - 3) * 120))::integer AS steps_count,
+        a.recorded_at - (gs.day_offset || ' days')::interval AS recorded_at
+    FROM activity_metrics a
+    CROSS JOIN generate_series(1, 19) AS gs(day_offset)
+    WHERE a.recorded_at::date = DATE '2026-04-18'
+)
+INSERT INTO activity_metrics (resident_id, steps_count, recorded_at)
+SELECT
+    g.resident_id,
+    g.steps_count,
+    g.recorded_at
+FROM generated_activity g
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM activity_metrics existing
+    WHERE existing.resident_id = g.resident_id
+      AND existing.recorded_at = g.recorded_at
+);
+
+
+-- Seed latest/current sleep reading per resident.
 INSERT INTO sleep_analytics (resident_id, sleep_duration_minutes, sleep_quality_score, recorded_at) VALUES
 (1, 360, 58, '2026-04-19 06:30:00'),
 (2, 420, 74, '2026-04-19 06:30:00'),
@@ -215,6 +269,33 @@ INSERT INTO sleep_analytics (resident_id, sleep_duration_minutes, sleep_quality_
 (13, 330, 58, '2026-04-19 06:30:00'),
 (14, 430, 80, '2026-04-19 06:30:00'),
 (15, 320, 55, '2026-04-19 06:30:00');
+
+
+-- Add 19 prior daily sleep readings per resident.
+-- Together with the latest/current row above, this gives 20 days of sleep history.
+WITH generated_sleep AS (
+    SELECT
+        s.resident_id,
+        GREATEST(180, s.sleep_duration_minutes + ((((s.resident_id + gs.day_offset) % 7) - 3) * 12))::integer AS sleep_duration_minutes,
+        LEAST(95, GREATEST(30, s.sleep_quality_score + ((((s.resident_id * 2 + gs.day_offset) % 7) - 3) * 3)))::integer AS sleep_quality_score,
+        s.recorded_at - (gs.day_offset || ' days')::interval AS recorded_at
+    FROM sleep_analytics s
+    CROSS JOIN generate_series(1, 19) AS gs(day_offset)
+    WHERE s.recorded_at::date = DATE '2026-04-19'
+)
+INSERT INTO sleep_analytics (resident_id, sleep_duration_minutes, sleep_quality_score, recorded_at)
+SELECT
+    g.resident_id,
+    g.sleep_duration_minutes,
+    g.sleep_quality_score,
+    g.recorded_at
+FROM generated_sleep g
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM sleep_analytics existing
+    WHERE existing.resident_id = g.resident_id
+      AND existing.recorded_at = g.recorded_at
+);
 
 
 -- Seed device telemetry.

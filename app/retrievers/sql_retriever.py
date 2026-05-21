@@ -3,6 +3,7 @@ SQL Retriever — Text-to-SQL pipeline with English synthesis.
 """
 import json
 import re
+from app.core.community import LOCAL_DEMO_COMMUNITIES, get_community_name
 from app.llm.client import ask_llm, ask_sql_planner
 from app.core.db import run_query
 from app.core.logger import get_logger
@@ -31,7 +32,8 @@ STRICT RULES:
 14. **CONTEXT**: Mention if values are above/below normal baselines
 """
 
-_SYNTHESIS_MAX_TOKENS = 320
+_SYNTHESIS_MAX_TOKENS = 700
+_HEALTH_EVALUATION_DAYS = 20
 
 _RESIDENT_PROFILE_RULES = [
     {
@@ -178,6 +180,10 @@ _NON_RESIDENT_NAME_CANDIDATES = {
     "the eldest",
     "the youngest",
 }
+_KNOWN_COMMUNITY_NAMES = {
+    name.lower()
+    for name in LOCAL_DEMO_COMMUNITIES.values()
+}
 
 _METRIC_RANKING_RULES = [
     {
@@ -254,16 +260,22 @@ _RESIDENT_AVERAGE_METRIC_RULES = [
         "metric": "sugar",
         "patterns": [r"\bsugar\b", r"\bglucose\b"],
         "sql": """
-        WITH latest_health AS (
-            SELECT DISTINCT ON (resident_id)
-                resident_id, sugar_level, recorded_at
-            FROM health_reports
-            ORDER BY resident_id, recorded_at DESC
+        WITH scoped_health AS (
+            SELECT h.resident_id, h.sugar_level, h.recorded_at
+            FROM health_reports h
+            JOIN residents r ON r.id = h.resident_id
+            WHERE r.community_id = %s
+        ),
+        health_window AS (
+            SELECT *
+            FROM scoped_health
+            WHERE recorded_at::date >= (
+                SELECT MAX(recorded_at)::date
+                FROM scoped_health
+            ) - INTERVAL '19 days'
         )
-        SELECT ROUND(AVG(h.sugar_level)::numeric, 1)
-        FROM residents r
-        JOIN latest_health h ON r.id = h.resident_id
-        WHERE r.community_id = %s;
+        SELECT ROUND(AVG(sugar_level)::numeric, 1)
+        FROM health_window;
         """,
         "label": "sugar level",
         "suffix": "",
@@ -272,16 +284,22 @@ _RESIDENT_AVERAGE_METRIC_RULES = [
         "metric": "steps",
         "patterns": [r"\bsteps\b", r"\bstep count\b", r"\bstep counts\b", r"\bactivity\b"],
         "sql": """
-        WITH latest_activity AS (
-            SELECT DISTINCT ON (resident_id)
-                resident_id, steps_count, recorded_at
-            FROM activity_metrics
-            ORDER BY resident_id, recorded_at DESC
+        WITH scoped_activity AS (
+            SELECT a.resident_id, a.steps_count, a.recorded_at
+            FROM activity_metrics a
+            JOIN residents r ON r.id = a.resident_id
+            WHERE r.community_id = %s
+        ),
+        activity_window AS (
+            SELECT *
+            FROM scoped_activity
+            WHERE recorded_at::date >= (
+                SELECT MAX(recorded_at)::date
+                FROM scoped_activity
+            ) - INTERVAL '19 days'
         )
-        SELECT ROUND(AVG(a.steps_count)::numeric, 1)
-        FROM residents r
-        JOIN latest_activity a ON r.id = a.resident_id
-        WHERE r.community_id = %s;
+        SELECT ROUND(AVG(steps_count)::numeric, 1)
+        FROM activity_window;
         """,
         "label": "step count",
         "suffix": " steps",
@@ -290,16 +308,22 @@ _RESIDENT_AVERAGE_METRIC_RULES = [
         "metric": "sleep_duration",
         "patterns": [r"\bsleep duration\b", r"\bsleep time\b", r"\bslept\b"],
         "sql": """
-        WITH latest_sleep AS (
-            SELECT DISTINCT ON (resident_id)
-                resident_id, sleep_duration_minutes, recorded_at
-            FROM sleep_analytics
-            ORDER BY resident_id, recorded_at DESC
+        WITH scoped_sleep AS (
+            SELECT s.resident_id, s.sleep_duration_minutes, s.recorded_at
+            FROM sleep_analytics s
+            JOIN residents r ON r.id = s.resident_id
+            WHERE r.community_id = %s
+        ),
+        sleep_window AS (
+            SELECT *
+            FROM scoped_sleep
+            WHERE recorded_at::date >= (
+                SELECT MAX(recorded_at)::date
+                FROM scoped_sleep
+            ) - INTERVAL '19 days'
         )
-        SELECT ROUND(AVG(s.sleep_duration_minutes)::numeric, 1)
-        FROM residents r
-        JOIN latest_sleep s ON r.id = s.resident_id
-        WHERE r.community_id = %s;
+        SELECT ROUND(AVG(sleep_duration_minutes)::numeric, 1)
+        FROM sleep_window;
         """,
         "label": "sleep duration",
         "suffix": " minutes",
@@ -308,16 +332,22 @@ _RESIDENT_AVERAGE_METRIC_RULES = [
         "metric": "sleep_quality",
         "patterns": [r"\bsleep score\b", r"\bsleep scores\b", r"\bsleep quality\b"],
         "sql": """
-        WITH latest_sleep AS (
-            SELECT DISTINCT ON (resident_id)
-                resident_id, sleep_quality_score, recorded_at
-            FROM sleep_analytics
-            ORDER BY resident_id, recorded_at DESC
+        WITH scoped_sleep AS (
+            SELECT s.resident_id, s.sleep_quality_score, s.recorded_at
+            FROM sleep_analytics s
+            JOIN residents r ON r.id = s.resident_id
+            WHERE r.community_id = %s
+        ),
+        sleep_window AS (
+            SELECT *
+            FROM scoped_sleep
+            WHERE recorded_at::date >= (
+                SELECT MAX(recorded_at)::date
+                FROM scoped_sleep
+            ) - INTERVAL '19 days'
         )
-        SELECT ROUND(AVG(s.sleep_quality_score)::numeric, 1)
-        FROM residents r
-        JOIN latest_sleep s ON r.id = s.resident_id
-        WHERE r.community_id = %s;
+        SELECT ROUND(AVG(sleep_quality_score)::numeric, 1)
+        FROM sleep_window;
         """,
         "label": "sleep score",
         "suffix": "",
@@ -326,18 +356,24 @@ _RESIDENT_AVERAGE_METRIC_RULES = [
         "metric": "bp",
         "patterns": [r"\bbp\b", r"\bblood pressure\b"],
         "sql": """
-        WITH latest_health AS (
-            SELECT DISTINCT ON (resident_id)
-                resident_id, bp_systolic, bp_diastolic, recorded_at
-            FROM health_reports
-            ORDER BY resident_id, recorded_at DESC
+        WITH scoped_health AS (
+            SELECT h.resident_id, h.bp_systolic, h.bp_diastolic, h.recorded_at
+            FROM health_reports h
+            JOIN residents r ON r.id = h.resident_id
+            WHERE r.community_id = %s
+        ),
+        health_window AS (
+            SELECT *
+            FROM scoped_health
+            WHERE recorded_at::date >= (
+                SELECT MAX(recorded_at)::date
+                FROM scoped_health
+            ) - INTERVAL '19 days'
         )
         SELECT
-            ROUND(AVG(h.bp_systolic)::numeric, 1),
-            ROUND(AVG(h.bp_diastolic)::numeric, 1)
-        FROM residents r
-        JOIN latest_health h ON r.id = h.resident_id
-        WHERE r.community_id = %s;
+            ROUND(AVG(bp_systolic)::numeric, 1),
+            ROUND(AVG(bp_diastolic)::numeric, 1)
+        FROM health_window;
         """,
         "label": "blood pressure",
         "suffix": " mmHg",
@@ -876,6 +912,58 @@ def _is_plausible_resident_name_fragment(candidate: str) -> bool:
     return True
 
 
+def _detect_known_community_reference(query: str) -> tuple[int, str] | None:
+    q_lower = query.lower()
+    for community_id, community_name in LOCAL_DEMO_COMMUNITIES.items():
+        pattern = rf"(?<!\w){re.escape(community_name.lower())}(?!\w)"
+        if re.search(pattern, q_lower):
+            return community_id, community_name
+    return None
+
+
+def _is_known_community_name(candidate: str) -> bool:
+    candidate_lower = candidate.lower().strip(" .,?!")
+    if candidate_lower in _KNOWN_COMMUNITY_NAMES:
+        return True
+    return any(
+        community_name.startswith(candidate_lower)
+        for community_name in _KNOWN_COMMUNITY_NAMES
+    )
+
+
+def _is_known_community_name_fragment(candidate: str, query: str) -> bool:
+    candidate_lower = candidate.lower().strip(" .,?!")
+    if not candidate_lower:
+        return False
+    reference = _detect_known_community_reference(query)
+    if not reference:
+        return False
+    _community_id, community_name = reference
+    return candidate_lower in community_name.lower().split()
+
+
+def _community_scope_mismatch_response(query: str, community_id: int) -> dict | None:
+    reference = _detect_known_community_reference(query)
+    if not reference:
+        return None
+
+    requested_community_id, requested_community_name = reference
+    if requested_community_id == community_id:
+        return None
+
+    return {
+        "query": query,
+        "plan": {
+            "_macro": "community_scope_mismatch",
+            "requested_community_id": requested_community_id,
+            "requested_community_name": requested_community_name,
+            "current_community_id": community_id,
+            "current_community_name": get_community_name(community_id) or f"community ID {community_id}",
+        },
+        "answer": f"I couldn't find matching resident records for '{requested_community_name.lower()}'.",
+    }
+
+
 def _extract_resident_name(query: str) -> str | None:
     q = query.lower().replace("’", "'").strip()
     patterns = [
@@ -883,6 +971,8 @@ def _extract_resident_name(query: str) -> str | None:
         r"\bwho\s+is\s+(?:resident\s+|patient\s+)?([a-z]+(?:\s+[a-z]+){1,2})\b",
         r"\b(?:what|which)\s+(?:flat|room)(?:\s+(?:number|no))?\s+(?:is|does)\s+(?:resident\s+|patient\s+)?([a-z]+(?:\s+[a-z]+){1,2})(?:\s+(?:in|have|has))?\b",
         r"\b(?:where\s+(?:does|is))\s+(?:resident\s+|patient\s+)?([a-z]+(?:\s+[a-z]+){1,2})(?:\s+(?:stay|staying|live|living|assigned))?\b",
+        r"\b(?:what|which)\s+(?:medications?|medicine|prescription|prescriptions|intake|treatment)\s+(?:is|are|does|do)\s+(?:resident\s+|patient\s+)?([a-z]+(?:\s+[a-z]+){1,2})(?:\s+(?:prescribed|take|takes|taking|on|have|has))?\b",
+        r"\b(?:what\s+is|what's)\s+(?:resident\s+|patient\s+)?([a-z]+(?:\s+[a-z]+){1,2})(?:'s)?\s+(?:prescribed\s+)?(?:medications?|medicine|prescription|prescriptions|intake|treatment)\b",
         r"\b([a-z]+(?:\s+[a-z]+){1,2})'s\b",
         r"\b(?:resident|patient)\s+([a-z]+(?:\s+[a-z]+){1,2})\b",
         r"\b(?:of|for|about)\s+([a-z]+(?:\s+[a-z]+){1,2})\b",
@@ -913,7 +1003,7 @@ def _extract_resident_name(query: str) -> str | None:
                 "these residents",
                 "those residents",
                 "community residents",
-            } and candidate not in _NON_RESIDENT_NAME_CANDIDATES and _is_plausible_resident_name(candidate):
+            } and candidate not in _NON_RESIDENT_NAME_CANDIDATES and not _is_known_community_name(candidate) and _is_plausible_resident_name(candidate):
                 return candidate.title()
     return None
 
@@ -933,6 +1023,13 @@ def _extract_resident_name_fragment(query: str) -> str | None:
         rf"(?:resident\s+|patient\s+)?([a-z]+)\b",
         rf"\b(?:what|which)\s+(?:flat|room)(?:\s+(?:number|no))?\s+(?:is|does)\s+"
         rf"(?:resident\s+|patient\s+)?([a-z]+)(?:\s+(?:in|have|has))?\b",
+        rf"\b(?:where\s+(?:does|is))\s+(?:resident\s+|patient\s+)?([a-z]+)"
+        rf"(?:\s+(?:stay|staying|live|living|assigned))?\b",
+        rf"\b(?:what|which)\s+(?:medications?|medicine|prescription|prescriptions|intake|treatment)\s+"
+        rf"(?:is|are|does|do)\s+(?:resident\s+|patient\s+)?([a-z]+)"
+        rf"(?:\s+(?:prescribed|take|takes|taking|on|have|has))?\b",
+        rf"\b(?:what\s+is|what's)\s+(?:resident\s+|patient\s+)?([a-z]+)(?:'s)?\s+"
+        rf"(?:prescribed\s+)?(?:medications?|medicine|prescription|prescriptions|intake|treatment)\b",
         rf"\b(?:give|show|display|get|tell)\b(?:\s+me)?(?:\s+the)?\s+(?:{profile_tail})\s+"
         rf"(?:of|for|about)\s+(?:resident\s+|patient\s+)?([a-z]+)\b",
         rf"\b(?:{profile_tail})\s+(?:of|for|about)\s+(?:resident\s+|patient\s+)?([a-z]+)\b",
@@ -947,6 +1044,7 @@ def _extract_resident_name_fragment(query: str) -> str | None:
             candidate = match.group(1).strip(" .,?!")
             if (
                 candidate not in _NON_RESIDENT_NAME_CANDIDATES
+                and not _is_known_community_name_fragment(candidate, query)
                 and _is_plausible_resident_name_fragment(candidate)
             ):
                 return candidate.title()
@@ -1078,7 +1176,7 @@ def _match_resident_names_in_query(query: str, resident_names: list[str]) -> lis
 
     for resident_name in resident_names:
         escaped_name = re.escape(resident_name.lower())
-        match = re.search(rf"(?<!\w){escaped_name}(?:'s)?(?!\w)", q_lower)
+        match = re.search(rf"(?<!\w){escaped_name}(?:'s|s)?(?!\w)", q_lower)
         if match:
             matches[resident_name] = match.start()
 
@@ -1093,7 +1191,7 @@ def _match_resident_names_in_query(query: str, resident_names: list[str]) -> lis
         resident_name = names[0]
         if resident_name in matches:
             continue
-        match = re.search(rf"(?<!\w){re.escape(first_name)}(?:'s)?(?!\w)", q_lower)
+        match = re.search(rf"(?<!\w){re.escape(first_name)}(?:'s|s)?(?!\w)", q_lower)
         if match:
             matches[resident_name] = match.start()
 
@@ -1720,23 +1818,28 @@ def _detect_resident_average_metric_plan(query: str) -> dict | None:
     return None
 
 
+def _windowed_average_context() -> str:
+    return f"over the last {_HEALTH_EVALUATION_DAYS} recorded days"
+
+
 def _run_resident_average_metric(plan: dict, community_id: int) -> dict:
     sql = plan["sql"]
     result = run_query(sql, (community_id,))
     label = plan["label"]
     suffix = plan.get("suffix", "")
+    context = _windowed_average_context()
 
     if not result or result[0][0] is None:
-        answer = f"I couldn't find recorded {label} values in this community."
+        answer = f"I couldn't find recorded {label} values in this community. Window checked: {context}."
     elif plan.get("metric") == "bp":
         systolic, diastolic = result[0]
-        answer = f"The average blood pressure in this community is {systolic}/{diastolic} mmHg."
+        answer = f"The average blood pressure in this community is {systolic}/{diastolic} mmHg. Window: {context}."
     elif plan.get("metric") == "sleep_duration":
         value = result[0][0]
-        answer = f"The average {label} in this community is {_format_sleep_duration(value)}."
+        answer = f"The average {label} in this community is {_format_sleep_duration(value)}. Window: {context}."
     else:
         value = result[0][0]
-        answer = f"The average {label} in this community is {value}{suffix}."
+        answer = f"The average {label} in this community is {value}{suffix}. Window: {context}."
 
     return {
         "query": "",
@@ -1745,6 +1848,209 @@ def _run_resident_average_metric(plan: dict, community_id: int) -> dict:
         "result": result,
         "answer": answer,
     }
+
+
+def _named_average_sql(metric: str) -> str | None:
+    if metric == "bp":
+        select_expr = "ROUND(AVG(h.bp_systolic)::numeric, 1), ROUND(AVG(h.bp_diastolic)::numeric, 1)"
+        table_expr = "health_reports h"
+        value_filter = ""
+    elif metric == "sugar":
+        select_expr = "ROUND(AVG(h.sugar_level)::numeric, 1)"
+        table_expr = "health_reports h"
+        value_filter = ""
+    elif metric == "steps":
+        select_expr = "ROUND(AVG(a.steps_count)::numeric, 1)"
+        table_expr = "activity_metrics a"
+        value_filter = ""
+    elif metric == "sleep_duration":
+        select_expr = "ROUND(AVG(s.sleep_duration_minutes)::numeric, 1)"
+        table_expr = "sleep_analytics s"
+        value_filter = ""
+    elif metric == "sleep_quality":
+        select_expr = "ROUND(AVG(s.sleep_quality_score)::numeric, 1)"
+        table_expr = "sleep_analytics s"
+        value_filter = ""
+    else:
+        return None
+
+    alias = table_expr.split()[1]
+    return f"""
+    WITH target_resident AS (
+        SELECT id, name
+        FROM residents
+        WHERE community_id = %s
+          AND name ILIKE %s
+        ORDER BY name
+        LIMIT 1
+    ),
+    resident_metrics AS (
+        SELECT {alias}.*
+        FROM {table_expr}
+        JOIN target_resident r ON r.id = {alias}.resident_id
+        {value_filter}
+    ),
+    metric_window AS (
+        SELECT *
+        FROM resident_metrics
+        WHERE recorded_at::date >= (
+            SELECT MAX(recorded_at)::date
+            FROM resident_metrics
+        ) - INTERVAL '19 days'
+    )
+    SELECT r.name, {select_expr}
+    FROM target_resident r
+    LEFT JOIN metric_window {alias} ON {alias}.resident_id = r.id
+    GROUP BY r.name;
+    """
+
+
+def _run_named_resident_average_metric(query: str, plan: dict, community_id: int) -> dict | None:
+    resident_name = _find_named_resident_in_query(query, community_id)
+    if not resident_name:
+        return None
+
+    sql = _named_average_sql(plan.get("metric", ""))
+    if not sql:
+        return None
+
+    params = (community_id, f"%{resident_name}%")
+    result = run_query(sql, params)
+    label = plan["label"]
+    suffix = plan.get("suffix", "")
+    context = _windowed_average_context()
+
+    named_plan = {
+        "_macro": "named_resident_average_metric",
+        "_metric": plan.get("metric"),
+        "resident_name": resident_name,
+        "window_days": _HEALTH_EVALUATION_DAYS,
+    }
+
+    if not result:
+        answer = f"I couldn't find matching resident records for '{resident_name}' in this community."
+    elif plan.get("metric") == "bp":
+        name, systolic, diastolic = result[0]
+        if systolic is None and diastolic is None:
+            answer = f"I couldn't find recorded blood pressure values for {name}. Window checked: {context}."
+        elif _wants_metric_interpretation(query):
+            answer = _interpret_average_metric("bp", name, systolic, diastolic, context)
+        else:
+            answer = f"{name}'s average blood pressure is {systolic}/{diastolic} mmHg. Window: {context}."
+    elif plan.get("metric") == "sleep_duration":
+        name, value = result[0]
+        if value is None:
+            answer = f"I couldn't find recorded {label} values for {name}. Window checked: {context}."
+        elif _wants_metric_interpretation(query):
+            answer = _interpret_average_metric("sleep_duration", name, value, None, context)
+        else:
+            answer = f"{name}'s average {label} is {_format_sleep_duration(value)}. Window: {context}."
+    else:
+        name, value = result[0]
+        if value is None:
+            answer = f"I couldn't find recorded {label} values for {name}. Window checked: {context}."
+        elif _wants_metric_interpretation(query):
+            answer = _interpret_average_metric(plan.get("metric", ""), name, value, None, context)
+        else:
+            answer = f"{name}'s average {label} is {value}{suffix}. Window: {context}."
+
+    return {
+        "query": query,
+        "plan": named_plan,
+        "sql": sql,
+        "result": result,
+        "answer": answer,
+    }
+
+
+def _interpret_average_metric(metric: str, name: str, value, secondary_value, context: str) -> str:
+    if metric == "bp":
+        systolic = _to_float(value)
+        diastolic = _to_float(secondary_value)
+        bp_text = f"{_metric_text(value)}/{_metric_text(secondary_value)}"
+        if (systolic is not None and systolic >= 160) or (diastolic is not None and diastolic >= 100):
+            status = "very high"
+        elif (systolic is not None and systolic >= 140) or (diastolic is not None and diastolic >= 90):
+            status = "elevated"
+        elif (systolic is not None and systolic >= 130) or (diastolic is not None and diastolic >= 85):
+            status = "borderline"
+        else:
+            status = "not flagged as elevated"
+        return (
+            f"{name}'s average blood pressure is {bp_text} mmHg. "
+            f"Window: {context}. In this project's care heuristic, that is {status}. "
+            "This is not a diagnosis."
+        )
+
+    numeric_value = _to_float(value)
+    if metric == "sugar":
+        if numeric_value is None:
+            status = "not recorded"
+        elif numeric_value >= 180:
+            status = "very high"
+        elif numeric_value >= 140:
+            status = "high"
+        elif numeric_value >= 125:
+            status = "borderline"
+        else:
+            status = "not flagged as high"
+        return (
+            f"{name}'s average sugar level is {value}. Window: {context}. "
+            f"In this project's care heuristic, that is {status}. This is not a diagnosis."
+        )
+
+    if metric == "steps":
+        if numeric_value is None:
+            status = "not recorded"
+        elif numeric_value < 2500:
+            status = "low activity"
+        elif numeric_value < 3500:
+            status = "reduced activity"
+        else:
+            status = "not flagged as low activity"
+        return (
+            f"{name}'s average step count is {value} steps. Window: {context}. "
+            f"In this project's care heuristic, that is {status}. This is not a diagnosis."
+        )
+
+    if metric == "sleep_duration":
+        if numeric_value is None:
+            status = "not recorded"
+        elif numeric_value < 300:
+            status = "short"
+        elif numeric_value < 360:
+            status = "reduced"
+        else:
+            status = "not flagged as reduced"
+        return (
+            f"{name}'s average sleep duration is {_format_sleep_duration(value)}. "
+            f"Window: {context}. In this project's care heuristic, that is {status}. "
+            "This is not a diagnosis."
+        )
+
+    if metric == "sleep_quality":
+        if numeric_value is None:
+            status = "not recorded"
+            meaning = "there is no average value to interpret"
+        elif numeric_value < 50:
+            status = "low"
+            meaning = "poorer sleep quality and a stronger review signal"
+        elif numeric_value < 60:
+            status = "borderline"
+            meaning = "not clearly good and should be reviewed with sleep duration and other metrics"
+        else:
+            status = "not flagged as low"
+            meaning = "better than the low or borderline range used by this project's care heuristic"
+        return (
+            f"{name}'s average sleep quality score is {value}. Window: {context}. "
+            f"In this project's care heuristic, that is {status}: {meaning}. "
+            "This is not a diagnosis."
+        )
+
+    return (
+        f"{name}'s average metric value is {value}. Window: {context}. "
+        "Review it with related resident metrics before deciding on follow-up. This is not a diagnosis."
+    )
 
 
 def _detect_resident_text_search_plan(query: str) -> dict | None:
@@ -2103,8 +2409,14 @@ def _run_device_status(plan: dict) -> dict:
         metric = plan["_metric"]
         order_direction = plan["_order_direction"]
         sql = f"""
+        WITH latest_device AS (
+            SELECT DISTINCT ON (UPPER(board_id))
+                board_id, location, signal, uptime, cpu, time
+            FROM device_status
+            ORDER BY UPPER(board_id), time DESC
+        )
         SELECT board_id, location, {metric}, time
-        FROM device_status
+        FROM latest_device
         ORDER BY {metric} {order_direction}, board_id ASC
         LIMIT 1;
         """
@@ -2125,7 +2437,16 @@ def _run_device_status(plan: dict) -> dict:
 
     if macro == "device_average":
         metric = plan["_metric"]
-        sql = f"SELECT ROUND(AVG({metric})::numeric, 1) FROM device_status;"
+        sql = f"""
+        WITH latest_device AS (
+            SELECT DISTINCT ON (UPPER(board_id))
+                board_id, location, signal, uptime, cpu, time
+            FROM device_status
+            ORDER BY UPPER(board_id), time DESC
+        )
+        SELECT ROUND(AVG({metric})::numeric, 1)
+        FROM latest_device;
+        """
         result = run_query(sql)
         label = _DEVICE_METRIC_LABELS[metric]
         value = result[0][0] if result and result[0][0] is not None else None
@@ -2137,8 +2458,14 @@ def _run_device_status(plan: dict) -> dict:
         return {"query": "", "plan": plan, "sql": sql, "result": result, "answer": answer}
 
     sql = """
+    WITH latest_device AS (
+        SELECT DISTINCT ON (UPPER(board_id))
+            board_id, location, signal, uptime, cpu, time
+        FROM device_status
+        ORDER BY UPPER(board_id), time DESC
+    )
     SELECT board_id, location, signal, uptime, cpu, time
-    FROM device_status
+    FROM latest_device
     ORDER BY board_id ASC
     LIMIT 100;
     """
@@ -2446,7 +2773,7 @@ def _find_named_resident_in_query(query: str, community_id: int) -> str | None:
     for row in rows:
         resident_name = str(row[0]).strip()
         first_name = resident_name.split()[0].lower() if resident_name else ""
-        if first_name and re.search(rf"\b{re.escape(first_name)}(?:'s)?\b", q_lower):
+        if first_name and re.search(rf"\b{re.escape(first_name)}(?:'s|s)?\b", q_lower):
             first_name_matches.append(resident_name)
     if len(first_name_matches) == 1:
         return first_name_matches[0]
@@ -2966,18 +3293,34 @@ def _metric_next_step(metric: str, name: str | None = None) -> str:
 
 
 def _score_care_row(row: tuple) -> dict:
-    (
-        resident_id,
-        name,
-        age,
-        medical_history,
-        bp_systolic,
-        bp_diastolic,
-        sugar_level,
-        steps_count,
-        sleep_duration_minutes,
-        sleep_quality_score,
-    ) = row
+    def row_value(index: int, default=None):
+        return row[index] if len(row) > index else default
+
+    resident_id = row_value(0)
+    name = row_value(1)
+    age = row_value(2)
+    medical_history = row_value(3)
+    bp_systolic = row_value(4)
+    bp_diastolic = row_value(5)
+    sugar_level = row_value(6)
+    steps_count = row_value(7)
+    sleep_duration_minutes = row_value(8)
+    sleep_quality_score = row_value(9)
+
+    avg_bp_systolic = row_value(10, bp_systolic)
+    avg_bp_diastolic = row_value(11, bp_diastolic)
+    avg_sugar_level = row_value(12, sugar_level)
+    avg_steps_count = row_value(13, steps_count)
+    avg_sleep_duration_minutes = row_value(14, sleep_duration_minutes)
+    avg_sleep_quality_score = row_value(15, sleep_quality_score)
+    health_days = row_value(16)
+    high_bp_days = row_value(17)
+    high_sugar_days = row_value(18)
+    activity_days = row_value(19)
+    low_activity_days = row_value(20)
+    sleep_days = row_value(21)
+    low_sleep_score_days = row_value(22)
+    short_sleep_days = row_value(23)
 
     score = 0
     reasons = []
@@ -2988,12 +3331,12 @@ def _score_care_row(row: tuple) -> dict:
         reasons.append(reason)
 
     age_value = _to_float(age)
-    systolic = _to_float(bp_systolic)
-    diastolic = _to_float(bp_diastolic)
-    sugar = _to_float(sugar_level)
-    steps = _to_float(steps_count)
-    sleep_minutes = _to_float(sleep_duration_minutes)
-    sleep_score = _to_float(sleep_quality_score)
+    systolic = _to_float(avg_bp_systolic)
+    diastolic = _to_float(avg_bp_diastolic)
+    sugar = _to_float(avg_sugar_level)
+    steps = _to_float(avg_steps_count)
+    sleep_minutes = _to_float(avg_sleep_duration_minutes)
+    sleep_score = _to_float(avg_sleep_quality_score)
 
     if age_value is not None:
         if age_value >= 85:
@@ -3002,38 +3345,51 @@ def _score_care_row(row: tuple) -> dict:
             add(1, f"age {int(age_value)}")
 
     if systolic is not None or diastolic is not None:
+        bp_reason = f"20-day avg BP {_metric_text(avg_bp_systolic)}/{_metric_text(avg_bp_diastolic)}"
         if (systolic is not None and systolic >= 160) or (diastolic is not None and diastolic >= 100):
-            add(3, f"very high BP {_metric_text(bp_systolic)}/{_metric_text(bp_diastolic)}")
+            add(3, f"very high {bp_reason}")
         elif (systolic is not None and systolic >= 140) or (diastolic is not None and diastolic >= 90):
-            add(2, f"elevated BP {_metric_text(bp_systolic)}/{_metric_text(bp_diastolic)}")
+            add(2, f"elevated {bp_reason}")
         elif (systolic is not None and systolic >= 130) or (diastolic is not None and diastolic >= 85):
-            add(1, f"borderline BP {_metric_text(bp_systolic)}/{_metric_text(bp_diastolic)}")
+            add(1, f"borderline {bp_reason}")
 
     if sugar is not None:
         if sugar >= 180:
-            add(3, f"very high sugar {sugar_level}")
+            add(3, f"very high 20-day avg sugar {avg_sugar_level}")
         elif sugar >= 140:
-            add(2, f"high sugar {sugar_level}")
+            add(2, f"high 20-day avg sugar {avg_sugar_level}")
         elif sugar >= 125:
-            add(1, f"borderline sugar {sugar_level}")
+            add(1, f"borderline 20-day avg sugar {avg_sugar_level}")
 
     if sleep_score is not None:
         if sleep_score < 50:
-            add(2, f"low sleep score {sleep_quality_score}")
+            add(2, f"low 20-day avg sleep score {avg_sleep_quality_score}")
         elif sleep_score < 60:
-            add(1, f"borderline sleep score {sleep_quality_score}")
+            add(1, f"borderline 20-day avg sleep score {avg_sleep_quality_score}")
 
     if sleep_minutes is not None:
         if sleep_minutes < 300:
-            add(2, f"short sleep duration {_format_sleep_duration(sleep_duration_minutes)}")
+            add(2, f"short 20-day avg sleep duration {_format_sleep_duration(avg_sleep_duration_minutes)}")
         elif sleep_minutes < 360:
-            add(1, f"reduced sleep duration {_format_sleep_duration(sleep_duration_minutes)}")
+            add(1, f"reduced 20-day avg sleep duration {_format_sleep_duration(avg_sleep_duration_minutes)}")
 
     if steps is not None:
         if steps < 2500:
-            add(2, f"low activity {steps_count} steps")
+            add(2, f"low 20-day avg activity {avg_steps_count} steps")
         elif steps < 3500:
-            add(1, f"reduced activity {steps_count} steps")
+            add(1, f"reduced 20-day avg activity {avg_steps_count} steps")
+
+    def add_repeated_signal(day_count, total_days, label: str):
+        days = _to_float(day_count)
+        total = _to_float(total_days)
+        if days is not None and total is not None and days >= 5:
+            add(1, f"{label} on {int(days)}/{int(total)} recorded days")
+
+    add_repeated_signal(high_bp_days, health_days, "high BP")
+    add_repeated_signal(high_sugar_days, health_days, "high sugar")
+    add_repeated_signal(low_activity_days, activity_days, "low activity")
+    add_repeated_signal(low_sleep_score_days, sleep_days, "low sleep score")
+    add_repeated_signal(short_sleep_days, sleep_days, "short sleep")
 
     history_text = str(medical_history or "").lower()
     history_rules = [
@@ -3067,6 +3423,20 @@ def _score_care_row(row: tuple) -> dict:
         "steps_count": steps_count,
         "sleep_duration_minutes": sleep_duration_minutes,
         "sleep_quality_score": sleep_quality_score,
+        "avg_bp_systolic": avg_bp_systolic,
+        "avg_bp_diastolic": avg_bp_diastolic,
+        "avg_sugar_level": avg_sugar_level,
+        "avg_steps_count": avg_steps_count,
+        "avg_sleep_duration_minutes": avg_sleep_duration_minutes,
+        "avg_sleep_quality_score": avg_sleep_quality_score,
+        "health_days": health_days,
+        "high_bp_days": high_bp_days,
+        "high_sugar_days": high_sugar_days,
+        "activity_days": activity_days,
+        "low_activity_days": low_activity_days,
+        "sleep_days": sleep_days,
+        "low_sleep_score_days": low_sleep_score_days,
+        "short_sleep_days": short_sleep_days,
         "care_score": score,
         "care_priority": priority,
         "reasons": reasons or ["no major risk signals in the recorded metrics"],
@@ -3164,7 +3534,7 @@ def _find_single_named_care_assessment(query: str, assessments: list[dict]) -> d
     for item in assessments:
         resident_name = str(item.get("name", "")).strip()
         first_name = resident_name.split()[0].lower() if resident_name else ""
-        if first_name and re.search(rf"\b{re.escape(first_name)}(?:'s)?\b", q_lower):
+        if first_name and re.search(rf"\b{re.escape(first_name)}(?:'s|s)?\b", q_lower):
             first_name_matches.append(item)
     if len(first_name_matches) == 1:
         return first_name_matches[0]
@@ -3179,6 +3549,41 @@ def _multi_care_question_wants_choice(query: str) -> bool:
         or _contains_care_phrase(q_lower, _HIGH_RISK_CARE_PHRASES)
         or _contains_care_phrase(q_lower, _LOW_RISK_CARE_PHRASES)
     )
+
+
+def _care_window_summary(item: dict) -> str:
+    bp_avg = f"{_metric_text(item.get('avg_bp_systolic'))}/{_metric_text(item.get('avg_bp_diastolic'))}"
+    parts = [
+        f"avg BP {bp_avg}",
+        f"avg sugar {_metric_text(item.get('avg_sugar_level'))}",
+        f"avg sleep score {_metric_text(item.get('avg_sleep_quality_score'))}",
+        f"avg sleep duration {_format_sleep_duration(item.get('avg_sleep_duration_minutes'))}",
+        f"avg steps {_metric_text(item.get('avg_steps_count'))}",
+    ]
+
+    signal_parts = []
+    if item.get("health_days") is not None:
+        signal_parts.append(
+            f"high BP days {_metric_text(item.get('high_bp_days'))}/{_metric_text(item.get('health_days'))}"
+        )
+        signal_parts.append(
+            f"high sugar days {_metric_text(item.get('high_sugar_days'))}/{_metric_text(item.get('health_days'))}"
+        )
+    if item.get("activity_days") is not None:
+        signal_parts.append(
+            f"low activity days {_metric_text(item.get('low_activity_days'))}/{_metric_text(item.get('activity_days'))}"
+        )
+    if item.get("sleep_days") is not None:
+        signal_parts.append(
+            f"low sleep score days {_metric_text(item.get('low_sleep_score_days'))}/{_metric_text(item.get('sleep_days'))}"
+        )
+        signal_parts.append(
+            f"short sleep days {_metric_text(item.get('short_sleep_days'))}/{_metric_text(item.get('sleep_days'))}"
+        )
+
+    if signal_parts:
+        return f"{_HEALTH_EVALUATION_DAYS}-day summary: {'; '.join(parts)}. Signals: {'; '.join(signal_parts)}."
+    return f"{_HEALTH_EVALUATION_DAYS}-day summary: {'; '.join(parts)}."
 
 
 def _format_named_care_assessment_answer(item: dict) -> str:
@@ -3203,8 +3608,9 @@ def _format_named_care_assessment_answer(item: dict) -> str:
         opening,
         f"Care score: {item['care_score']} ({item['care_priority']} priority).",
         f"Recorded values: {metrics}.",
+        _care_window_summary(item),
         f"Main reasons: {reasons}.",
-        "This is a data-prioritization heuristic from recorded values, not a diagnosis.",
+        f"This is a data-prioritization heuristic using the last {_HEALTH_EVALUATION_DAYS} recorded days where available, not a diagnosis.",
     ])
 
 
@@ -3234,10 +3640,10 @@ def _format_multiple_named_care_assessment_answer(query: str, items: list[dict])
         reasons = "; ".join(item["reasons"][:4])
         lines.append(
             f"- {item['name']}: {item['care_priority']} priority "
-            f"(score {item['care_score']}). {metrics}. Reasons: {reasons}."
+            f"(score {item['care_score']}). {metrics}. {_care_window_summary(item)} Reasons: {reasons}."
         )
 
-    lines.append("This is a data-prioritization heuristic from recorded values, not a diagnosis.")
+    lines.append(f"This is a data-prioritization heuristic using the last {_HEALTH_EVALUATION_DAYS} recorded days where available, not a diagnosis.")
     return "\n".join(lines)
 
 
@@ -3272,6 +3678,7 @@ def _format_oldest_care_assessment_answer(assessments: list[dict]) -> str:
             f"Care priority: {care_item['care_priority']} (score {care_item['care_score']}).",
             f"Main reasons: {care_reasons}.",
             f"Recorded values: {care_metrics}.",
+            _care_window_summary(care_item),
             (
                 f"Next step: Prioritize a check-in for {care_item['name']} and review the latest "
                 "BP, sugar, sleep, activity, and care-plan notes. This is not a diagnosis."
@@ -3287,6 +3694,7 @@ def _format_oldest_care_assessment_answer(assessments: list[dict]) -> str:
         f"Care priority: {care_item['care_priority']} (score {care_item['care_score']}).",
         f"Main reasons: {care_reasons}.",
         f"Recorded values: {care_metrics}.",
+        _care_window_summary(care_item),
         (
             f"Next step: Prioritize a care review for {care_item['name']}, while keeping "
             f"{oldest_item['name']} on age-related monitoring. This is not a diagnosis."
@@ -3325,7 +3733,7 @@ def _format_care_assessment_answer(query: str, assessments: list[dict]) -> str:
 
 
     lines = [
-        f"I assessed {len(assessments)} residents in this community using recorded BP, sugar, sleep, steps, age, and medical history.",
+        f"I assessed {len(assessments)} residents in this community using latest readings plus the last {_HEALTH_EVALUATION_DAYS} recorded days of BP, sugar, sleep, steps, age, and medical history.",
         f"Showing the {len(visible_items)} {priority_label} {resident_label}:",
     ]
 
@@ -3339,32 +3747,102 @@ def _format_care_assessment_answer(query: str, assessments: list[dict]) -> str:
         reasons = "; ".join(item["reasons"][:4])
         lines.append(
             f"{idx}. {item['name']} - {item['care_priority']} priority "
-            f"(score {item['care_score']}). {metrics}. Reasons: {reasons}."
+            f"(score {item['care_score']}). {metrics}. {_care_window_summary(item)} Reasons: {reasons}."
         )
 
-    lines.append("This is a data-prioritization heuristic from recorded values, not a diagnosis.")
+    lines.append(f"This is a data-prioritization heuristic using the last {_HEALTH_EVALUATION_DAYS} recorded days where available, not a diagnosis.")
     return "\n".join(lines)
 
 
 def _run_care_assessment(query: str, community_id: int) -> dict:
     sql = """
-    WITH latest_health AS (
-        SELECT DISTINCT ON (resident_id)
-            resident_id, bp_systolic, bp_diastolic, sugar_level, recorded_at
-        FROM health_reports
-        ORDER BY resident_id, recorded_at DESC
+    WITH scoped_residents AS (
+        SELECT id, name, age, health_medical_history
+        FROM residents
+        WHERE community_id = %s
+    ),
+    latest_health AS (
+        SELECT DISTINCT ON (h.resident_id)
+            h.resident_id, h.bp_systolic, h.bp_diastolic, h.sugar_level, h.recorded_at
+        FROM health_reports h
+        JOIN scoped_residents r ON r.id = h.resident_id
+        ORDER BY h.resident_id, h.recorded_at DESC
     ),
     latest_activity AS (
-        SELECT DISTINCT ON (resident_id)
-            resident_id, steps_count, recorded_at
-        FROM activity_metrics
-        ORDER BY resident_id, recorded_at DESC
+        SELECT DISTINCT ON (a.resident_id)
+            a.resident_id, a.steps_count, a.recorded_at
+        FROM activity_metrics a
+        JOIN scoped_residents r ON r.id = a.resident_id
+        ORDER BY a.resident_id, a.recorded_at DESC
     ),
     latest_sleep AS (
-        SELECT DISTINCT ON (resident_id)
-            resident_id, sleep_duration_minutes, sleep_quality_score, recorded_at
-        FROM sleep_analytics
-        ORDER BY resident_id, recorded_at DESC
+        SELECT DISTINCT ON (s.resident_id)
+            s.resident_id, s.sleep_duration_minutes, s.sleep_quality_score, s.recorded_at
+        FROM sleep_analytics s
+        JOIN scoped_residents r ON r.id = s.resident_id
+        ORDER BY s.resident_id, s.recorded_at DESC
+    ),
+    health_window AS (
+        SELECT h.*
+        FROM health_reports h
+        JOIN scoped_residents r ON r.id = h.resident_id
+        WHERE h.recorded_at::date >= (
+            SELECT MAX(h2.recorded_at)::date
+            FROM health_reports h2
+            JOIN scoped_residents r2 ON r2.id = h2.resident_id
+        ) - INTERVAL '19 days'
+    ),
+    activity_window AS (
+        SELECT a.*
+        FROM activity_metrics a
+        JOIN scoped_residents r ON r.id = a.resident_id
+        WHERE a.recorded_at::date >= (
+            SELECT MAX(a2.recorded_at)::date
+            FROM activity_metrics a2
+            JOIN scoped_residents r2 ON r2.id = a2.resident_id
+        ) - INTERVAL '19 days'
+    ),
+    sleep_window AS (
+        SELECT s.*
+        FROM sleep_analytics s
+        JOIN scoped_residents r ON r.id = s.resident_id
+        WHERE s.recorded_at::date >= (
+            SELECT MAX(s2.recorded_at)::date
+            FROM sleep_analytics s2
+            JOIN scoped_residents r2 ON r2.id = s2.resident_id
+        ) - INTERVAL '19 days'
+    ),
+    health_20d AS (
+        SELECT
+            resident_id,
+            ROUND(AVG(bp_systolic)::numeric, 1) AS avg_bp_systolic,
+            ROUND(AVG(bp_diastolic)::numeric, 1) AS avg_bp_diastolic,
+            ROUND(AVG(sugar_level)::numeric, 1) AS avg_sugar_level,
+            COUNT(*) AS health_days,
+            SUM(CASE WHEN bp_systolic >= 140 OR bp_diastolic >= 90 THEN 1 ELSE 0 END) AS high_bp_days,
+            SUM(CASE WHEN sugar_level >= 140 THEN 1 ELSE 0 END) AS high_sugar_days
+        FROM health_window
+        GROUP BY resident_id
+    ),
+    activity_20d AS (
+        SELECT
+            resident_id,
+            ROUND(AVG(steps_count)::numeric, 1) AS avg_steps_count,
+            COUNT(*) AS activity_days,
+            SUM(CASE WHEN steps_count < 3500 THEN 1 ELSE 0 END) AS low_activity_days
+        FROM activity_window
+        GROUP BY resident_id
+    ),
+    sleep_20d AS (
+        SELECT
+            resident_id,
+            ROUND(AVG(sleep_duration_minutes)::numeric, 1) AS avg_sleep_duration_minutes,
+            ROUND(AVG(sleep_quality_score)::numeric, 1) AS avg_sleep_quality_score,
+            COUNT(*) AS sleep_days,
+            SUM(CASE WHEN sleep_quality_score < 60 THEN 1 ELSE 0 END) AS low_sleep_score_days,
+            SUM(CASE WHEN sleep_duration_minutes < 360 THEN 1 ELSE 0 END) AS short_sleep_days
+        FROM sleep_window
+        GROUP BY resident_id
     )
     SELECT
         r.id,
@@ -3376,12 +3854,28 @@ def _run_care_assessment(query: str, community_id: int) -> dict:
         h.sugar_level,
         a.steps_count,
         s.sleep_duration_minutes,
-        s.sleep_quality_score
-    FROM residents r
+        s.sleep_quality_score,
+        hw.avg_bp_systolic,
+        hw.avg_bp_diastolic,
+        hw.avg_sugar_level,
+        aw.avg_steps_count,
+        sw.avg_sleep_duration_minutes,
+        sw.avg_sleep_quality_score,
+        hw.health_days,
+        hw.high_bp_days,
+        hw.high_sugar_days,
+        aw.activity_days,
+        aw.low_activity_days,
+        sw.sleep_days,
+        sw.low_sleep_score_days,
+        sw.short_sleep_days
+    FROM scoped_residents r
     LEFT JOIN latest_health h ON r.id = h.resident_id
     LEFT JOIN latest_activity a ON r.id = a.resident_id
     LEFT JOIN latest_sleep s ON r.id = s.resident_id
-    WHERE r.community_id = %s
+    LEFT JOIN health_20d hw ON r.id = hw.resident_id
+    LEFT JOIN activity_20d aw ON r.id = aw.resident_id
+    LEFT JOIN sleep_20d sw ON r.id = sw.resident_id
     ORDER BY r.id;
     """
     rows = run_query(sql, (community_id,))
@@ -3584,6 +4078,10 @@ def normalize_filters(plan: dict) -> dict:
 
 def handle_sql(query: str, community_id: int) -> dict:
     try:
+        community_scope_mismatch = _community_scope_mismatch_response(query, community_id)
+        if community_scope_mismatch:
+            return community_scope_mismatch
+
         device_status_plan = _detect_device_status_plan(query)
         if device_status_plan:
             logger.info(f"Using deterministic device status plan: {device_status_plan}")
@@ -3613,6 +4111,9 @@ def handle_sql(query: str, community_id: int) -> dict:
         resident_average_metric_plan = _detect_resident_average_metric_plan(query)
         if resident_average_metric_plan:
             logger.info(f"Using deterministic resident average metric plan: {resident_average_metric_plan}")
+            named_average_response = _run_named_resident_average_metric(query, resident_average_metric_plan, community_id)
+            if named_average_response:
+                return named_average_response
             response = _run_resident_average_metric(resident_average_metric_plan, community_id)
             response["query"] = query
             return response

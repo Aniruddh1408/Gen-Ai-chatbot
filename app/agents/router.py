@@ -3,6 +3,7 @@ Router Agent - Unified intent dispatch and multi-retriever logic.
 """
 import re
 
+from app.core.config import LLM_CHAT_TEMPERATURE
 from app.core.logger import get_logger
 from app.llm.client import ask_llm
 from app.retrievers.sql_retriever import handle_sql
@@ -90,14 +91,14 @@ SQL_LOOKUP_PHRASES = [
 ]
 AGE_LOOKUP_RE = re.compile(
     r"\b(?:(?:h?ow)\s+old\s+is|(?:what\s+is\s+)?(?:the\s+)?age\s+of)\s+"
-    r"(?:resident\s+|patient\s+)?[a-z]+(?:\s+[a-z]+){1,2}\b",
+    r"(?:resident\s+|patient\s+)?[a-z]+(?:\s+[a-z]+){0,2}\b",
     re.IGNORECASE,
 )
 ROOM_LOOKUP_RE = re.compile(
     r"\b(?:(?:where\s+(?:does|is))\s+(?:resident\s+|patient\s+)?"
-    r"[a-z]+(?:\s+[a-z]+){1,2}\s+(?:stay|staying|live|living|assigned)|"
+    r"[a-z]+(?:\s+[a-z]+){0,2}\s+(?:stay|staying|live|living|assigned)|"
     r"(?:what|which)\s+(?:flat|room)(?:\s+(?:number|no))?\s+(?:is|does)\s+"
-    r"(?:resident\s+|patient\s+)?[a-z]+(?:\s+[a-z]+){1,2}(?:\s+(?:in|have|has))?)\b",
+    r"(?:resident\s+|patient\s+)?[a-z]+(?:\s+[a-z]+){0,2}(?:\s+(?:in|have|has))?)\b",
     re.IGNORECASE,
 )
 DEVICE_ID_RE = re.compile(r"\bdev[1-5]\b", re.IGNORECASE)
@@ -131,7 +132,8 @@ _GENERIC_EXPLANATION_SQL_BLOCKERS = [
     "more than", "less than", "higher than", "lower than",
 ]
 _GENERAL_CHAT_PROMPT = (
-    "You are a helpful ChatGPT-like assistant inside KuboCare. "
+    "You are KuboCare, a chat assistant for resident health metrics, activity insights, and care-related information. "
+    "If asked who you are, answer exactly: I am KuboCare analyst, a chat assistant for resident health metrics, activity insights, and care-related information. "
     "Answer general questions naturally and clearly with depth and context. You can help with explanations, writing, planning, "
     "summaries, and general knowledge. "
     "Use recent conversation only to resolve pronouns or follow-ups; do not invent resident database values. "
@@ -196,8 +198,18 @@ _GENERAL_CLINICAL_DATA_BLOCKERS = [
     "show", "give", "which", "who has", "who takes", "who is taking",
 ]
 _GENERAL_CLINICAL_PREFIXES = FORCE_CHAT_PREFIXES + [
+    "how is", "how are", "how can", "how should", "how to",
     "side effects", "uses of", "use of", "benefits of", "risks of",
     "common side effects", "explain side effects",
+]
+_GENERAL_CLINICAL_SUBJECT_PREFIXES = [
+    "is", "are", "can", "does", "do", "should",
+]
+_GENERAL_CLINICAL_TOPIC_NOUNS = [
+    "benefit", "benefits", "cause", "causes", "diagnosis", "management",
+    "prevention", "risk", "risks", "sign", "signs", "side effect",
+    "side effects", "symptom", "symptoms", "therapy", "treatment",
+    "treatments", "use", "uses",
 ]
 _POSSESSIVE_NAME_RE = re.compile(r"\b[a-z]+(?:\s+[a-z]+){0,2}'s\b", re.IGNORECASE)
 _DOC_ROUTING_DISTANCE = 0.93
@@ -219,6 +231,12 @@ _METRIC_GUIDANCE_DATA_BLOCKERS = [
     "record", "records", "list", "show", "give", "which resident", "who has",
     "average", "avg", "highest", "lowest", "top", "bottom", "compare",
     "comparison", "chart", "graph",
+]
+_KUBOCARE_PRODUCT_TERMS = [
+    "company", "product", "device", "devices", "wearable", "wearables",
+    "non-wearable", "camera", "cameras",
+    "radar", "frequency", "ghz", "mmwave", "millimeter", "fall detection",
+    "fall", "privacy", "safety", "ambient", "sensor", "sensors",
 ]
 
 _METRIC_BASELINES = {
@@ -346,7 +364,7 @@ def _looks_like_generic_explanatory_query(query: str) -> bool:
 
 def _looks_like_general_clinical_education_query(query: str) -> bool:
     q = query.lower().strip()
-    if not any(q.startswith(prefix) for prefix in _GENERAL_CLINICAL_PREFIXES):
+    if not _has_general_clinical_term(q):
         return False
     if _looks_like_resident_lookup(q) or _POSSESSIVE_NAME_RE.search(q) or _has_named_metric_hint(q):
         return False
@@ -356,7 +374,45 @@ def _looks_like_general_clinical_education_query(query: str) -> bool:
                 return False
         elif _contains_term(q, blocker):
             return False
-    return any(_contains_term(q, term) for term in _GENERAL_CLINICAL_TERMS)
+    return (
+        any(q.startswith(prefix) for prefix in _GENERAL_CLINICAL_PREFIXES)
+        or _looks_like_clinical_subject_question(q)
+        or _looks_like_clinical_topic_phrase(q)
+        or q.startswith(("when should ", "when to "))
+    )
+
+
+def _has_general_clinical_term(query: str) -> bool:
+    return any(_contains_term(query, term) for term in _GENERAL_CLINICAL_TERMS)
+
+
+def _starts_with_general_clinical_term(text: str) -> bool:
+    return any(
+        re.search(rf"^{re.escape(term)}\b", text, re.IGNORECASE)
+        for term in sorted(_GENERAL_CLINICAL_TERMS, key=len, reverse=True)
+    )
+
+
+def _looks_like_clinical_subject_question(query: str) -> bool:
+    for prefix in _GENERAL_CLINICAL_SUBJECT_PREFIXES:
+        prefix_with_space = f"{prefix} "
+        if query.startswith(prefix_with_space):
+            return _starts_with_general_clinical_term(query[len(prefix_with_space):].strip())
+    return False
+
+
+def _looks_like_clinical_topic_phrase(query: str) -> bool:
+    if not any(_contains_term(query, noun) for noun in _GENERAL_CLINICAL_TOPIC_NOUNS):
+        return False
+
+    if _starts_with_general_clinical_term(query):
+        return True
+
+    topic_pattern = "|".join(
+        re.escape(noun)
+        for noun in sorted(_GENERAL_CLINICAL_TOPIC_NOUNS, key=len, reverse=True)
+    )
+    return re.search(rf"\b(?:{topic_pattern})\s+(?:of|for|from|with|in)\b", query, re.IGNORECASE) is not None
 
 
 def _looks_like_clear_sql_query(query: str) -> bool:
@@ -378,6 +434,30 @@ def _looks_like_unambiguous_documentation_query(query: str) -> bool:
 
 def _looks_like_metric_concept_query(query: str) -> bool:
     return _METRIC_CONCEPT_RE.search(query) is not None
+
+
+def _looks_like_kubocare_product_documentation_query(query: str) -> bool:
+    q = query.lower().strip()
+    if DEVICE_ID_RE.search(q):
+        return False
+
+    mentions_kubocare = "kubocare" in q or "kubo care" in q
+    mentions_product_device = any(_contains_term(q, term) for term in ["device", "devices", "sensor", "sensors"])
+    asks_product_detail = any(term in q for term in _KUBOCARE_PRODUCT_TERMS)
+    asks_company_overview = re.search(
+        r"\b(?:what\s+(?:is|does)|who\s+is|tell\s+me\s+about|explain)\b.*\b(?:kubocare|kubo\s+care)\b",
+        q,
+    ) is not None
+
+    if mentions_kubocare and (asks_product_detail or asks_company_overview):
+        return True
+
+    # Follow-ups like "are the devices wearable?" should use product docs,
+    # while telemetry questions such as "device status" stay in SQL.
+    if mentions_product_device and any(term in q for term in ["wearable", "camera", "radar", "frequency", "fall detection"]):
+        return True
+
+    return False
 
 
 def _metric_guidance_keys(query: str) -> list[str]:
@@ -402,12 +482,29 @@ def _has_named_metric_hint(query: str) -> bool:
     q = query.lower().strip()
     if _POSSESSIVE_NAME_RE.search(q):
         return True
+    non_name_fragments = {
+        "what", "which", "who", "how", "many", "much", "is", "are", "was", "were",
+        "the", "a", "an", "his", "her", "their", "current", "latest", "average",
+        "avg", "mean", "good", "bad", "normal", "ideal", "high", "low",
+    }
+
+    def is_name_fragment(candidate: str) -> bool:
+        return candidate not in non_name_fragments and candidate not in _METRIC_GUIDANCE_TRIGGERS
+
     metric_word = r"(?:sleep|bp|blood\s+pressure|sugar|glucose|steps?|step\s+count|activity)"
+    named_metric_tail = (
+        r"(?:current|latest|average|avg|mean)?\s*"
+        r"(?:sleep\s+score|sleep\s+quality\s+score|sleep|bp|blood\s+pressure|"
+        r"sugar|glucose|steps?|step\s+count|activity)"
+    )
+    named_match = re.search(rf"\b([a-z]+)(?:'s|s)?\s+{named_metric_tail}\b", q)
+    if named_match and is_name_fragment(named_match.group(1)):
+        return True
     named_match = re.search(rf"\b(?:is|are)\s+([a-z]+)\s+{metric_word}\b", q)
-    if named_match and named_match.group(1) not in _METRIC_GUIDANCE_TRIGGERS:
+    if named_match and is_name_fragment(named_match.group(1)):
         return True
     named_match = re.search(rf"\b(?:for|of)\s+([a-z]+)\s+{metric_word}\b", q)
-    if named_match and named_match.group(1) not in _METRIC_GUIDANCE_TRIGGERS:
+    if named_match and is_name_fragment(named_match.group(1)):
         return True
     named_match = re.search(rf"\b{metric_word}\s+(?:for|of)\s+([a-z]+(?:\s+[a-z]+){{0,2}})\b", q)
     if named_match:
@@ -544,6 +641,12 @@ def classify_intent(query: str) -> str:
     if _looks_like_unambiguous_documentation_query(q):
         return "RAG"
 
+    if _looks_like_kubocare_product_documentation_query(q):
+        return "RAG"
+
+    if DEVICE_ID_RE.search(q) or _has_named_metric_hint(q):
+        return "SQL"
+
     if _looks_like_general_clinical_education_query(q):
         return "CHAT"
 
@@ -624,7 +727,7 @@ def route_query(
                 chat_input,
                 system_prompt=_GENERAL_CHAT_PROMPT,
                 num_predict=220,
-                temperature=0.0,
+                temperature=LLM_CHAT_TEMPERATURE,
             )
             return {"query": query, "answer": answer}
         except Exception as e:

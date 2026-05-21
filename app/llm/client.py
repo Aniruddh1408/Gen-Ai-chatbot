@@ -9,8 +9,8 @@ from langchain_openai import ChatOpenAI
 from app.core.config import (
     LLM_API_KEY,
     LLM_BASE_URL,
+    LLM_DATA_TEMPERATURE,
     LLM_MODEL,
-    LLM_TEMPERATURE,
     LLM_TIMEOUT_SECONDS,
 )
 from app.schema.schema import SCHEMA, schema_to_text
@@ -20,7 +20,7 @@ llm = ChatOpenAI(
     model=LLM_MODEL,
     base_url=LLM_BASE_URL,
     api_key=LLM_API_KEY,
-    temperature=LLM_TEMPERATURE,
+    temperature=LLM_DATA_TEMPERATURE,
     max_tokens=256,
     timeout=LLM_TIMEOUT_SECONDS,
 )
@@ -140,7 +140,7 @@ def ask_with_messages(
 ) -> str:
     """Call the vLLM OpenAI-compatible chat API and return assistant content."""
     invoke_kwargs = {
-        "temperature": LLM_TEMPERATURE if temperature is None else temperature,
+        "temperature": LLM_DATA_TEMPERATURE if temperature is None else temperature,
         "max_tokens": num_predict,
     }
     if response_format == "json":
