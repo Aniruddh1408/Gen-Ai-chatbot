@@ -136,6 +136,19 @@ _SHORT_REPHRASE_TERMS = [
     "short summary",
     "briefly",
     "in brief",
+    "in short",
+    "in short form",
+    "give it in short",
+    "give this in short",
+    "give that in short",
+    "give it in short form",
+    "shorten it",
+    "shorten this",
+    "keep it short",
+    "make it brief",
+    "be brief",
+    "tldr",
+    "tl;dr",
 ]
 _DETAIL_FOLLOWUP_TERMS = [
     "explain in detail",
@@ -181,6 +194,13 @@ def _after_guardrail(state: ChatGraphState) -> str:
     return "route"
 
 
+def _after_attachment(state: ChatGraphState) -> str:
+    # If an uploaded file answered the question, skip routing and sanitize/save.
+    if _has_response(state):
+        return "output_guardrail"
+    return "route"
+
+
 def _after_transform_previous_answer(state: ChatGraphState) -> str:
     if _has_response(state):
         return "output_guardrail"
@@ -196,6 +216,11 @@ def _clean_sub_query(query: str) -> str:
     return cleaned
 
 
+def _is_format_modifier_clause(part: str) -> bool:
+    """True when a clause only asks to reshape the answer (short/points/simpler/...)."""
+    return _detect_transform_style(part) is not None
+
+
 def split_multi_question_query(query: str) -> list[str]:
     normalized = re.sub(r"\s+", " ", query).strip()
     if not normalized:
@@ -209,6 +234,11 @@ def split_multi_question_query(query: str) -> list[str]:
     ]
     question_mark_parts = [part for part in question_mark_parts if part]
     if len(question_mark_parts) > 1:
+        # A trailing "give it in short / in points / explain simpler" is a
+        # formatting request about the preceding question, not a new question.
+        # Keep the message whole so the modifier applies to the real answer.
+        if _is_format_modifier_clause(question_mark_parts[-1]):
+            return [normalized]
         return question_mark_parts[:_MAX_SUB_QUERIES]
 
     connector_parts = [
@@ -217,6 +247,8 @@ def split_multi_question_query(query: str) -> list[str]:
     ]
     connector_parts = [part for part in connector_parts if part]
     if len(connector_parts) > 1:
+        if _is_format_modifier_clause(connector_parts[-1]):
+            return [normalized]
         return connector_parts[:_MAX_SUB_QUERIES]
 
     return [normalized]
@@ -478,6 +510,44 @@ def guardrail_node(state: ChatGraphState) -> ChatGraphState:
     }
 
 
+def attachment_node(state: ChatGraphState) -> ChatGraphState:
+    """Answer from a session's uploaded files when relevant.
+
+    If the session has no attachments, or the question isn't clearly about them,
+    returns {} so the graph proceeds to normal routing (SQL/RAG/chat).
+    """
+    if _has_response(state):
+        return {}
+
+    memory_session_id = state.get("memory_session_id")
+    if not memory_session_id:
+        return {}
+
+    # Imported lazily so tests that load only the workflow graph don't need to
+    # import the vector retriever (and its DB/embedding dependencies).
+    from app.retrievers.vector_retriever import handle_attachment_qa
+
+    query = state.get("rewritten_query") or state["query"]
+    try:
+        response = handle_attachment_qa(query, memory_session_id)
+    except Exception as exc:
+        logger.exception(
+            f"Attachment QA crashed: {exc}",
+            extra={"trace_id": state.get("trace_id")},
+        )
+        return {}
+
+    if not response:
+        return {}
+
+    response.setdefault("query", state["query"])
+    return {
+        "response": response,
+        "should_save_memory": True,
+        "attachment_answered": True,
+    }
+
+
 def route_node(state: ChatGraphState) -> ChatGraphState:
     if _has_response(state):
         return {}
@@ -613,6 +683,7 @@ def build_chat_graph():
     graph.add_node("rewrite", rewrite_node)
     graph.add_node("split_questions", split_questions_node)
     graph.add_node("guardrail", guardrail_node)
+    graph.add_node("attachment", attachment_node)
     graph.add_node("route", route_node)
     graph.add_node("output_guardrail", output_guardrail_node)
     graph.add_node("save_memory", save_memory_node)
@@ -651,8 +722,16 @@ def build_chat_graph():
         "guardrail",
         _after_guardrail,
         {
-            "route": "route",
+            "route": "attachment",
             "finalize": "finalize",
+        },
+    )
+    graph.add_conditional_edges(
+        "attachment",
+        _after_attachment,
+        {
+            "route": "route",
+            "output_guardrail": "output_guardrail",
         },
     )
     graph.add_edge("route", "output_guardrail")

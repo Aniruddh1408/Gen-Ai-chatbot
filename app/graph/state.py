@@ -20,3 +20,4 @@ class ChatGraphState(TypedDict, total=False):
     response: dict[str, Any]
     ai_answer: str
     should_save_memory: bool
+    attachment_answered: bool

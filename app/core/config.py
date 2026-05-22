@@ -47,6 +47,53 @@ REDIS_DB = int(os.getenv("REDIS_DB", 0))
 EMBED_BASE_URL = os.getenv("EMBED_BASE_URL", "http://localhost:11434")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "mxbai-embed-large")
 
+
+# --- File uploads / per-session attachments (ephemeral, private) ---
+def _env_int_cfg(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float_cfg(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_extensions(raw: str | None, default: str) -> set[str]:
+    value = raw if raw is not None else default
+    return {
+        ext.strip().lower().lstrip(".")
+        for ext in value.split(",")
+        if ext.strip()
+    }
+
+
+# Max accepted upload size (default 10 MB).
+UPLOAD_MAX_BYTES = _env_int_cfg("UPLOAD_MAX_BYTES", 10 * 1024 * 1024)
+# Allowed file extensions (no leading dot, lowercase). Images are intentionally
+# excluded: the deployed LLM is text-only.
+UPLOAD_ALLOWED_EXTENSIONS = _parse_extensions(
+    os.getenv("UPLOAD_ALLOWED_EXTENSIONS"), "pdf,docx,txt,md,csv,xlsx"
+)
+# Uploaded files persist with their chat session (durable, no expiry). Override
+# only the on-disk store location if needed.
+ATTACHMENT_STORE_FILE = os.getenv("ATTACHMENT_STORE_FILE")
+# Caps to keep the small LLM context window safe and storage bounded.
+ATTACHMENT_MAX_FILES_PER_SESSION = max(1, _env_int_cfg("ATTACHMENT_MAX_FILES_PER_SESSION", 5))
+ATTACHMENT_MAX_CHARS = max(1000, _env_int_cfg("ATTACHMENT_MAX_CHARS", 60000))
+# How many of the most relevant chunks to feed the LLM per question.
+ATTACHMENT_TOP_K = max(1, _env_int_cfg("ATTACHMENT_TOP_K", 4))
+# Minimum cosine similarity for a chunk to count as "relevant"; below this for a
+# non-summary question, the chat graph falls through to normal routing.
+ATTACHMENT_MIN_SCORE = _env_float_cfg("ATTACHMENT_MIN_SCORE", 0.35)
+# Chunking parameters (mirrors scripts/embed_docs.py defaults).
+ATTACHMENT_CHUNK_SIZE = max(200, _env_int_cfg("ATTACHMENT_CHUNK_SIZE", 900))
+ATTACHMENT_CHUNK_OVERLAP = max(0, _env_int_cfg("ATTACHMENT_CHUNK_OVERLAP", 80))
+
 # --- Connection pool ---
 DB_POOL_MIN = int(os.getenv("DB_POOL_MIN", "1"))
 DB_POOL_MAX = int(os.getenv("DB_POOL_MAX", "10"))
