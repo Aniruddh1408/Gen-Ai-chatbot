@@ -49,1118 +49,20 @@ def _synthesize_answer(query: str, columns: str, result: list) -> str:
     )
 _HEALTH_EVALUATION_DAYS = 20
 
-_RESIDENT_PROFILE_RULES = [
-    {
-        "name": "age",
-        "patterns": [r"\bage\b", r"\bages\b", r"\bhow old\b", r"\bold is\b", r"\bolder\b", r"\byounger\b"],
-        "column": "residents.name, residents.age",
-    },
-    {
-        "name": "flat_no",
-        "patterns": [
-            r"\bflat\b",
-            r"\bflats\b",
-            r"\bflat no\b",
-            r"\bflat number\b",
-            r"\broom\b",
-            r"\brooms\b",
-            r"\bwhere\s+(?:does|is)\b",
-            r"\bstay\b",
-            r"\bstaying\b",
-            r"\blive\b",
-            r"\bliving\b",
-            r"\bassigned\b",
-        ],
-        "column": "residents.name, residents.flat_no",
-    },
-    {
-        "name": "medical_history",
-        "patterns": [r"\bmedical history\b", r"\bhealth history\b", r"\bhistory\b"],
-        "column": "residents.name, residents.health_medical_history",
-    },
-    {
-        "name": "medical_intake",
-        "patterns": [r"\bprescribed\b", r"\bintake\b", r"\bmedication\b", r"\bmedications\b", r"\btreatment plan\b"],
-        "column": "residents.name, residents.medical_intake_prescribed",
-    },
-    {
-        "name": "details",
-        "patterns": [
-            r"\bdetails?\b",
-            r"\binfo\b",
-            r"\binformation\b",
-            r"\bprofile\b",
-            r"\btell\s+me\s+about\b",
-            r"\bwho\s+is\b",
-        ],
-        "column": (
-            "residents.name, residents.id, residents.flat_no, residents.age, "
-            "residents.health_medical_history, residents.medical_intake_prescribed"
-        ),
-    },
-    {
-        "name": "name",
-        "patterns": [r"\bname\b"],
-        "column": "residents.name, residents.id",
-    },
-]
-
-_RESIDENT_LIST_PATTERNS = [
-    r"\b(?:list|show|display|get)\b(?:\s+me)?(?:\s+the)?(?:\s+all)?\s+(?:residents|patients)\b",
-    r"\bgive\s+me\s+(?:the\s+)?list\s+of\s+(?:the\s+)?(?:residents|patients)\b",
-    r"\b(?:list|show|display|get)\b(?:\s+me)?(?:\s+the)?\s+list\s+of\s+(?:the\s+)?(?:residents|patients)\b",
-    r"\b(?:the\s+)?list\s+of\s+(?:the\s+)?(?:residents|patients)\b",
-    r"\bwho\s+are\s+(?:the\s+)?(?:residents|patients)\b",
-]
-
-_RESIDENT_LIST_METRIC_TERMS = {
-    "age",
-    "ages",
-    "old",
-    "flat",
-    "flats",
-    "room",
-    "rooms",
-    "medical",
-    "history",
-    "histories",
-    "medication",
-    "medications",
-    "intake",
-    "prescribed",
-    "detail",
-    "details",
-    "health",
-    "metric",
-    "metrics",
-    "bp",
-    "blood pressure",
-    "sugar",
-    "glucose",
-    "steps",
-    "sleep",
-    "score",
-    "quality",
-    "duration",
-    "highest",
-    "lowest",
-    "best",
-    "worst",
-    "top",
-    "bottom",
-    "care",
-    "analysis",
-    "analyze",
-    "compare",
-    "comparison",
-    "chart",
-    "graph",
-    "plot",
-}
-
-_RESIDENT_COLLECTION_TERMS = {
-    "residents",
-    "patients",
-    "they",
-    "them",
-    "their",
-    "theirs",
-    "these",
-    "those",
-}
-
-_RANKING_TERMS = {
-    "best",
-    "worst",
-    "highest",
-    "lowest",
-    "top",
-    "bottom",
-    "most",
-    "least",
-    "fewest",
-    "oldest",
-    "eldest",
-    "youngest",
-    "runner-up",
-    "runner up",
-}
-
-_NON_RESIDENT_NAME_CANDIDATES = {
-    "oldest",
-    "eldest",
-    "youngest",
-    "the oldest",
-    "the eldest",
-    "the youngest",
-}
-_KNOWN_COMMUNITY_NAMES = {
-    name.lower()
-    for name in LOCAL_DEMO_COMMUNITIES.values()
-}
-
-_METRIC_RANKING_RULES = [
-    {
-        "name": "sleep_quality_score",
-        "table": "sleep_analytics",
-        "column": "residents.name, sleep_quality_score",
-        "order_by": "sleep_quality_score",
-        "label": "sleep score",
-        "patterns": [
-            r"\bsleep score\b",
-            r"\bsleep scores\b",
-            r"\bsleep quality\b",
-            r"\bsleep quality score\b",
-            r"\bsleep quality scores\b",
-        ],
-    },
-    {
-        "name": "sleep_duration_minutes",
-        "table": "sleep_analytics",
-        "column": "residents.name, sleep_duration_minutes",
-        "order_by": "sleep_duration_minutes",
-        "label": "sleep duration",
-        "patterns": [
-            r"\bsleep duration\b",
-            r"\bsleep time\b",
-            r"\bslept\b",
-        ],
-    },
-    {
-        "name": "steps_count",
-        "table": "activity_metrics",
-        "column": "residents.name, steps_count",
-        "order_by": "steps_count",
-        "label": "step count",
-        "patterns": [
-            r"\bsteps\b",
-            r"\bstep count\b",
-            r"\bstep counts\b",
-            r"\bwalking\b",
-        ],
-    },
-    {
-        "name": "sugar_level",
-        "table": "health_reports",
-        "column": "residents.name, sugar_level",
-        "order_by": "sugar_level",
-        "label": "sugar level",
-        "patterns": [
-            r"\bsugar\b",
-            r"\bglucose\b",
-            r"\bsugar level\b",
-            r"\bsugar levels\b",
-            r"\bglucose level\b",
-            r"\bglucose levels\b",
-        ],
-    },
-    {
-        "name": "bp_systolic",
-        "table": "health_reports",
-        "column": "residents.name, bp_systolic",
-        "order_by": "bp_systolic",
-        "label": "systolic blood pressure",
-        "patterns": [
-            r"\bbp\b",
-            r"\bblood pressure\b",
-            r"\bblood pressures\b",
-            r"\bsystolic\b",
-        ],
-    },
-]
-
-_RESIDENT_AVERAGE_METRIC_RULES = [
-    {
-        "metric": "sugar",
-        "patterns": [r"\bsugar\b", r"\bglucose\b"],
-        "sql": """
-        WITH scoped_health AS (
-            SELECT h.resident_id, h.sugar_level, h.recorded_at
-            FROM health_reports h
-            JOIN residents r ON r.id = h.resident_id
-            WHERE r.community_id = %s
-        ),
-        health_window AS (
-            SELECT *
-            FROM scoped_health
-            WHERE recorded_at::date >= (
-                SELECT MAX(recorded_at)::date
-                FROM scoped_health
-            ) - INTERVAL '19 days'
-        )
-        SELECT ROUND(AVG(sugar_level)::numeric, 1)
-        FROM health_window;
-        """,
-        "label": "sugar level",
-        "suffix": "",
-    },
-    {
-        "metric": "steps",
-        "patterns": [r"\bsteps\b", r"\bstep count\b", r"\bstep counts\b", r"\bactivity\b"],
-        "sql": """
-        WITH scoped_activity AS (
-            SELECT a.resident_id, a.steps_count, a.recorded_at
-            FROM activity_metrics a
-            JOIN residents r ON r.id = a.resident_id
-            WHERE r.community_id = %s
-        ),
-        activity_window AS (
-            SELECT *
-            FROM scoped_activity
-            WHERE recorded_at::date >= (
-                SELECT MAX(recorded_at)::date
-                FROM scoped_activity
-            ) - INTERVAL '19 days'
-        )
-        SELECT ROUND(AVG(steps_count)::numeric, 1)
-        FROM activity_window;
-        """,
-        "label": "step count",
-        "suffix": " steps",
-    },
-    {
-        "metric": "sleep_duration",
-        "patterns": [r"\bsleep duration\b", r"\bsleep time\b", r"\bslept\b"],
-        "sql": """
-        WITH scoped_sleep AS (
-            SELECT s.resident_id, s.sleep_duration_minutes, s.recorded_at
-            FROM sleep_analytics s
-            JOIN residents r ON r.id = s.resident_id
-            WHERE r.community_id = %s
-        ),
-        sleep_window AS (
-            SELECT *
-            FROM scoped_sleep
-            WHERE recorded_at::date >= (
-                SELECT MAX(recorded_at)::date
-                FROM scoped_sleep
-            ) - INTERVAL '19 days'
-        )
-        SELECT ROUND(AVG(sleep_duration_minutes)::numeric, 1)
-        FROM sleep_window;
-        """,
-        "label": "sleep duration",
-        "suffix": " minutes",
-    },
-    {
-        "metric": "sleep_quality",
-        "patterns": [r"\bsleep score\b", r"\bsleep scores\b", r"\bsleep quality\b"],
-        "sql": """
-        WITH scoped_sleep AS (
-            SELECT s.resident_id, s.sleep_quality_score, s.recorded_at
-            FROM sleep_analytics s
-            JOIN residents r ON r.id = s.resident_id
-            WHERE r.community_id = %s
-        ),
-        sleep_window AS (
-            SELECT *
-            FROM scoped_sleep
-            WHERE recorded_at::date >= (
-                SELECT MAX(recorded_at)::date
-                FROM scoped_sleep
-            ) - INTERVAL '19 days'
-        )
-        SELECT ROUND(AVG(sleep_quality_score)::numeric, 1)
-        FROM sleep_window;
-        """,
-        "label": "sleep score",
-        "suffix": "",
-    },
-    {
-        "metric": "bp",
-        "patterns": [r"\bbp\b", r"\bblood pressure\b"],
-        "sql": """
-        WITH scoped_health AS (
-            SELECT h.resident_id, h.bp_systolic, h.bp_diastolic, h.recorded_at
-            FROM health_reports h
-            JOIN residents r ON r.id = h.resident_id
-            WHERE r.community_id = %s
-        ),
-        health_window AS (
-            SELECT *
-            FROM scoped_health
-            WHERE recorded_at::date >= (
-                SELECT MAX(recorded_at)::date
-                FROM scoped_health
-            ) - INTERVAL '19 days'
-        )
-        SELECT
-            ROUND(AVG(bp_systolic)::numeric, 1),
-            ROUND(AVG(bp_diastolic)::numeric, 1)
-        FROM health_window;
-        """,
-        "label": "blood pressure",
-        "suffix": " mmHg",
-    },
-]
-
-_DEVICE_METRIC_LABELS = {
-    "signal": "signal",
-    "uptime": "uptime",
-    "cpu": "CPU",
-}
-
-_DEVICE_SIGNAL_REVIEW_THRESHOLD = -75.0
-_DEVICE_UPTIME_REVIEW_THRESHOLD = 95.0
-_DEVICE_CPU_REVIEW_THRESHOLD = 50.0
-
-_DEVICE_ISSUE_WORDS = [
-    "issue",
-    "issues",
-    "problem",
-    "problems",
-    "fault",
-    "faulty",
-    "error",
-    "errors",
-    "offline",
-    "down",
-    "broken",
-    "unstable",
-    "degraded",
-    "alert",
-    "alerts",
-    "anomaly",
-    "anomalies",
-    "concerning",
-    "bad",
-    "poor",
-]
-
-_DEVICE_ISSUE_PHRASES = [
-    "not working",
-    "not responding",
-    "has issues",
-    "have issues",
-    "having issues",
-    "has a problem",
-    "have a problem",
-    "acting up",
-]
-
-_NAMED_RESIDENT_METRIC_TERMS = [
-    ("all_metrics", ["health metrics", "all metrics", "vital signs", "vitals"]),
-    ("bp", ["bp", "blood pressure", "systolic", "diastolic"]),
-    ("sugar", ["sugar", "glucose"]),
-    ("steps", ["steps", "step count", "activity"]),
-    ("sleep_duration", ["sleep duration", "sleep time", "slept"]),
-    ("sleep_quality", ["sleep score", "sleep quality", "sleep scores"]),
-    ("sleep", ["sleep"]),
-]
-
-_CARE_ASSESSMENT_KEYWORDS = [
-    "more care",
-    "most care",
-    "more acre",
-    "most acre",
-    "less care",
-    "least care",
-    "less acre",
-    "least acre",
-    "requires less care",
-    "requires least care",
-    "requires less acre",
-    "requires least acre",
-    "highest care",
-    "highest priority",
-    "lowest care",
-    "lowest priority",
-    "care priority",
-    "overall health",
-    "health status",
-    "health condition",
-    "wellness status",
-    "health metrics",
-    "all metrics",
-    "comprehensive",
-    "needs care",
-    "need care",
-    "needing care",
-    "prioritize",
-    "risk",
-    "risks",
-    "at risk",
-    "health risk",
-    "risk score",
-    "needs attention",
-    "need attention",
-    "critical",
-    "vital signs",
-    "vitals",
-    "other residents",
-    "requires care",
-    "require care",
-    "requires more care",
-    "requires less care",
-    "requires more acre",
-    "requires less acre",
-    "healthy",
-    "healthiest",
-    "unhealthy",
-    "unhealthiest",
-    "most unhealthy",
-    "not healthy",
-    "least healthy",
-    "most healthy",
-    "best health",
-    "worst health",
-    "poorest health",
-    "poor health",
-    "stable health",
-    "most stable",
-    "least stable",
-    "lowest risk",
-    "highest risk",
-    "least risk",
-    "most at risk",
-]
-
-_LOW_RISK_CARE_PHRASES = [
-    "less care",
-    "least care",
-    "less acre",
-    "least acre",
-    "lower care",
-    "routine care",
-    "lowest care",
-    "lowest priority",
-    "least priority",
-    "routine priority",
-    "healthy",
-    "healthiest",
-    "most healthy",
-    "best health",
-    "best overall health",
-    "stable health",
-    "most stable",
-    "lowest risk",
-    "least risk",
-    "least attention",
-    "lowest attention",
-    "does not need care",
-    "doesn't need care",
-    "doesnt need care",
-]
-
-_HIGH_RISK_CARE_PHRASES = [
-    "more care",
-    "most care",
-    "more acre",
-    "most acre",
-    "higher care",
-    "highest care",
-    "highest priority",
-    "needs care",
-    "need care",
-    "needing care",
-    "requires care",
-    "require care",
-    "requires more care",
-    "requires most care",
-    "requires more acre",
-    "requires most acre",
-    "needs attention",
-    "need attention",
-    "critical",
-    "risk",
-    "risks",
-    "at risk",
-    "health risk",
-    "highest risk",
-    "most at risk",
-    "not healthy",
-    "unhealthy",
-    "unhealthiest",
-    "most unhealthy",
-    "least healthy",
-    "worst health",
-    "poorest health",
-    "poor health",
-    "least stable",
-]
-
-_HEALTHIEST_CARE_PHRASES = [
-    "healthy",
-    "healthiest",
-    "most healthy",
-    "best health",
-    "best overall health",
-    "stable health",
-    "most stable",
-]
-
-_UNHEALTHY_CARE_PHRASES = [
-    "not healthy",
-    "unhealthy",
-    "unhealthiest",
-    "most unhealthy",
-    "least healthy",
-    "worst health",
-    "poorest health",
-    "poor health",
-    "least stable",
-]
-
-_BROAD_CARE_PHRASES = [
-    "other residents",
-    "other patients",
-    "all residents",
-    "all patients",
-    "all metrics",
-    "comprehensive",
-    "what about",
-]
-
-_SINGULAR_CARE_RANKING_PHRASES = [
-    "most care",
-    "most acre",
-    "requires most care",
-    "requires most acre",
-    "highest care",
-    "highest priority",
-    "highest risk",
-    "most at risk",
-    "least care",
-    "least acre",
-    "requires least care",
-    "requires least acre",
-    "lowest care",
-    "lowest priority",
-    "least priority",
-    "lowest risk",
-    "least risk",
-    "healthiest",
-    "most healthy",
-    "best health",
-    "best overall health",
-    "most stable",
-    "unhealthiest",
-    "most unhealthy",
-    "least healthy",
-    "worst health",
-    "poorest health",
-    "poor health",
-    "least stable",
-]
-
-_ASC_RANKING_PATTERNS = [
-    r"\bworst\b",
-    r"\blowest\b",
-    r"\bleast\b",
-    r"\bfewest\b",
-    r"\bbottom\b",
-    r"\bshortest\b",
-]
-
-_DESC_RANKING_PATTERNS = [
-    r"\bbest\b",
-    r"\bhighest\b",
-    r"\bmost\b",
-    r"\btop\b",
-    r"\blongest\b",
-    r"\brunner[-\s]?up\b",
-]
-
-_ORDINAL_WORDS = {
-    "first": 1,
-    "second": 2,
-    "third": 3,
-    "fourth": 4,
-    "fifth": 5,
-    "sixth": 6,
-    "seventh": 7,
-    "eighth": 8,
-    "ninth": 9,
-    "tenth": 10,
-}
-
-_NUMBER_WORDS = {
-    "one": 1,
-    "two": 2,
-    "three": 3,
-    "four": 4,
-    "five": 5,
-    "six": 6,
-    "seven": 7,
-    "eight": 8,
-    "nine": 9,
-    "ten": 10,
-}
-
-_RESIDENT_NAME_STOPWORDS = {
-    "resident", "residents", "patient", "patients", "community", "this", "that",
-    "these", "those", "all", "their", "his", "her", "him", "them", "who",
-    "what", "which", "where", "when", "why", "how", "is", "are", "was",
-    "were", "the", "a", "an", "has", "have", "with",
-    "and", "or",
-    "list", "show", "display", "give", "get", "tell", "on", "takes", "taking",
-    "me", "my", "find", "see", "check",
-    "above", "below", "over", "under", "less", "more", "greater", "fewer",
-    "medical", "history", "medication", "prescribed", "details", "room",
-    "rooms", "flat", "flats", "age", "ages",
-    "bp", "blood", "pressure", "sugar", "glucose", "level", "levels",
-    "steps", "step", "sleep", "score", "scores", "quality", "duration",
-    "chart", "graph", "pie", "bar", "line",
-}
-
-_RESIDENT_TEXT_SEARCH_RULES = [
-    {
-        "label": "hypertension",
-        "patterns": [r"\bhypertension\b"],
-        "columns": ["r.health_medical_history"],
-        "terms": ["hypertension"],
-    },
-    {
-        "label": "diabetes",
-        "patterns": [r"\bdiabetes\b", r"\btype\s+2\s+diabetes\b"],
-        "columns": ["r.health_medical_history"],
-        "terms": ["diabetes"],
-        "exclude_terms": ["pre-diabetes", "prediabetes"],
-    },
-    {
-        "label": "pre-diabetes",
-        "patterns": [r"\bpre[-\s]?diabetes\b", r"\bprediabetes\b"],
-        "columns": ["r.health_medical_history"],
-        "terms": ["pre-diabetes", "prediabetes"],
-    },
-    {
-        "label": "arthritis",
-        "patterns": [r"\barthritis\b", r"\bjoint pain\b"],
-        "columns": ["r.health_medical_history"],
-        "terms": ["arthritis", "joint pain"],
-    },
-    {
-        "label": "asthma",
-        "patterns": [r"\basthma\b"],
-        "columns": ["r.health_medical_history"],
-        "terms": ["asthma"],
-    },
-    {
-        "label": "cardiac or cardiovascular history",
-        "patterns": [r"\bcardiac\b", r"\bcardiovascular\b", r"\bheart\b"],
-        "columns": ["r.health_medical_history"],
-        "terms": ["cardiac", "cardiovascular"],
-    },
-    {
-        "label": "osteoporosis",
-        "patterns": [r"\bosteoporosis\b"],
-        "columns": ["r.health_medical_history"],
-        "terms": ["osteoporosis"],
-    },
-    {
-        "label": "thyroid disorder",
-        "patterns": [r"\bthyroid\b"],
-        "columns": ["r.health_medical_history"],
-        "terms": ["thyroid"],
-    },
-    {
-        "label": "post-surgery support",
-        "patterns": [r"\bpost[-\s]?surgery\b", r"\bsurgery\b", r"\bmobility support\b"],
-        "columns": ["r.health_medical_history"],
-        "terms": ["post-surgery", "post surgery", "mobility support"],
-    },
-    {
-        "label": "Metformin",
-        "patterns": [r"\bmetformin\b"],
-        "columns": ["r.medical_intake_prescribed"],
-        "terms": ["metformin"],
-    },
-    {
-        "label": "Amlodipine",
-        "patterns": [r"\bamlodipine\b"],
-        "columns": ["r.medical_intake_prescribed"],
-        "terms": ["amlodipine"],
-    },
-    {
-        "label": "Atorvastatin",
-        "patterns": [r"\batorvastatin\b"],
-        "columns": ["r.medical_intake_prescribed"],
-        "terms": ["atorvastatin"],
-    },
-    {
-        "label": "Calcium or Vitamin D",
-        "patterns": [r"\bcalcium\b", r"\bvitamin\s+d\b"],
-        "columns": ["r.medical_intake_prescribed"],
-        "terms": ["calcium", "vitamin d"],
-    },
-    {
-        "label": "Levothyroxine",
-        "patterns": [r"\blevothyroxine\b"],
-        "columns": ["r.medical_intake_prescribed"],
-        "terms": ["levothyroxine"],
-    },
-    {
-        "label": "Salbutamol inhaler",
-        "patterns": [r"\bsalbutamol\b", r"\binhaler\b"],
-        "columns": ["r.medical_intake_prescribed"],
-        "terms": ["salbutamol", "inhaler"],
-    },
-    {
-        "label": "Paracetamol",
-        "patterns": [r"\bparacetamol\b"],
-        "columns": ["r.medical_intake_prescribed"],
-        "terms": ["paracetamol"],
-    },
-    {
-        "label": "Telmisartan",
-        "patterns": [r"\btelmisartan\b"],
-        "columns": ["r.medical_intake_prescribed"],
-        "terms": ["telmisartan"],
-    },
-    {
-        "label": "Aspirin",
-        "patterns": [r"\baspirin\b"],
-        "columns": ["r.medical_intake_prescribed"],
-        "terms": ["aspirin"],
-    },
-    {
-        "label": "diet and exercise plan",
-        "patterns": [r"\bdiet\b", r"\bexercise plan\b", r"\blifestyle monitoring\b"],
-        "columns": ["r.health_medical_history", "r.medical_intake_prescribed"],
-        "terms": ["diet", "exercise plan", "lifestyle monitoring"],
-    },
-    {
-        "label": "no major chronic illness",
-        "patterns": [r"\bno major chronic illness\b", r"\bno major illness\b"],
-        "columns": ["r.health_medical_history"],
-        "terms": ["no major chronic illness", "no major illness"],
-    },
-]
-
-_THRESHOLD_PATTERNS = [
-    (r"\b(?:above|over|greater\s+than|more\s+than|higher\s+than)\s+(\d+(?:\.\d+)?)\b", ">", "above"),
-    (r"\b(?:at\s+least|minimum|min)\s+(\d+(?:\.\d+)?)\b", ">=", "at least"),
-    (r"\b(?:below|under|less\s+than|fewer\s+than|lower\s+than)\s+(\d+(?:\.\d+)?)\b", "<", "below"),
-    (r"\b(?:at\s+most|maximum|max|no\s+more\s+than)\s+(\d+(?:\.\d+)?)\b", "<=", "at most"),
-]
-
-_METRIC_THRESHOLD_RULES = [
-    {
-        "metric": "sleep_quality",
-        "patterns": [r"\bsleep score\b", r"\bsleep quality\b", r"\bsleep quality score\b"],
-        "label": "sleep quality score",
-        "kind": "sleep",
-        "column": "s.sleep_quality_score",
-        "value_column": "s.sleep_quality_score",
-        "unit": "",
-    },
-    {
-        "metric": "sleep_duration",
-        "patterns": [r"\bslept\b", r"\bsleep duration\b", r"\bsleep time\b", r"\bminutes\b"],
-        "label": "sleep duration",
-        "kind": "sleep",
-        "column": "s.sleep_duration_minutes",
-        "value_column": "s.sleep_duration_minutes",
-        "unit": " minutes",
-    },
-    {
-        "metric": "bp",
-        "patterns": [r"\bbp\b", r"\bblood pressure\b", r"\bsystolic\b"],
-        "label": "systolic blood pressure",
-        "kind": "health",
-        "column": "h.bp_systolic",
-        "value_column": "h.bp_systolic",
-        "unit": " mmHg",
-    },
-    {
-        "metric": "sugar",
-        "patterns": [r"\bsugar\b", r"\bglucose\b"],
-        "label": "sugar level",
-        "kind": "health",
-        "column": "h.sugar_level",
-        "value_column": "h.sugar_level",
-        "unit": "",
-    },
-    {
-        "metric": "steps",
-        "patterns": [r"\bsteps\b", r"\bstep count\b", r"\bwalked\b", r"\bwalking\b"],
-        "label": "step count",
-        "kind": "activity",
-        "column": "a.steps_count",
-        "value_column": "a.steps_count",
-        "unit": " steps",
-    },
-    {
-        "metric": "age",
-        "patterns": [r"\bage\b", r"\bold\b"],
-        "label": "age",
-        "kind": "resident",
-        "column": "r.age",
-        "value_column": "r.age",
-        "unit": " years",
-    },
-]
-
-_QUALITATIVE_THRESHOLD_RULES = [
-    {
-        "patterns": [r"\b(?:high|elevated|raised)\s+(?:bp|blood pressure)\b", r"\b(?:bp|blood pressure)\s+(?:is\s+)?(?:high|elevated|raised)\b"],
-        "plan": {
-            "metric": "bp",
-            "label": "high blood pressure",
-            "kind": "health",
-            "column": "h.bp_systolic",
-            "value_column": "h.bp_systolic",
-            "operator": ">=",
-            "value": 140,
-            "unit": " mmHg",
-            "bp_any_thresholds": [("h.bp_systolic", 140), ("h.bp_diastolic", 90)],
-            "comparison_text": "high blood pressure (systolic >= 140 or diastolic >= 90)",
-        },
-    },
-    {
-        "patterns": [r"\b(?:low)\s+(?:bp|blood pressure)\b", r"\b(?:bp|blood pressure)\s+(?:is\s+)?low\b"],
-        "plan": {
-            "metric": "bp",
-            "label": "low blood pressure",
-            "kind": "health",
-            "column": "h.bp_systolic",
-            "value_column": "h.bp_systolic",
-            "operator": "<",
-            "value": 90,
-            "unit": " mmHg",
-            "bp_any_thresholds": [("h.bp_systolic", 90), ("h.bp_diastolic", 60)],
-            "comparison_text": "low blood pressure (systolic < 90 or diastolic < 60)",
-        },
-    },
-    {
-        "patterns": [r"\b(?:high|elevated|raised)\s+(?:sugar|glucose)\b", r"\b(?:sugar|glucose)\s+(?:is\s+)?(?:high|elevated|raised)\b"],
-        "plan": {
-            "metric": "sugar",
-            "label": "sugar level",
-            "kind": "health",
-            "column": "h.sugar_level",
-            "value_column": "h.sugar_level",
-            "operator": ">=",
-            "value": 140,
-            "unit": "",
-        },
-    },
-    {
-        "patterns": [r"\b(?:low|poor)\s+(?:sleep score|sleep quality|sleep quality score)\b"],
-        "plan": {
-            "metric": "sleep_quality",
-            "label": "sleep quality score",
-            "kind": "sleep",
-            "column": "s.sleep_quality_score",
-            "value_column": "s.sleep_quality_score",
-            "operator": "<",
-            "value": 50,
-            "unit": "",
-        },
-    },
-    {
-        "patterns": [r"\b(?:low|poor)\s+(?:activity|steps|step count)\b", r"\b(?:inactive|low activity)\b"],
-        "plan": {
-            "metric": "steps",
-            "label": "step count",
-            "kind": "activity",
-            "column": "a.steps_count",
-            "value_column": "a.steps_count",
-            "operator": "<",
-            "value": 2500,
-            "unit": " steps",
-        },
-    },
-    {
-        "patterns": [r"\b(?:short|low|reduced)\s+sleep(?:\s+duration|\s+time)?\b"],
-        "plan": {
-            "metric": "sleep_duration",
-            "label": "sleep duration",
-            "kind": "sleep",
-            "column": "s.sleep_duration_minutes",
-            "value_column": "s.sleep_duration_minutes",
-            "operator": "<",
-            "value": 360,
-            "unit": " minutes",
-        },
-    },
-]
-
-_VISUAL_KEYWORDS = ["chart", "graph", "plot", "visualize", "visualization", "show stats", "comparison", "pie", "bar chart", "line graph", "doughnut", "donut"]
+from app.retrievers._sql.constants import *  # noqa: F401,F403  (rule tables & keyword sets)
 
 
-def _is_plausible_resident_name(candidate: str) -> bool:
-    words = [word.strip(" .,?!():'\"").lower() for word in candidate.split()]
-    words = [word for word in words if word]
-    if len(words) < 2:
-        return False
-    if any(word in _RESIDENT_NAME_STOPWORDS for word in words):
-        return False
-    return True
-
-
-def _is_plausible_resident_name_fragment(candidate: str) -> bool:
-    words = [word.strip(" .,?!():'\"").lower() for word in candidate.split()]
-    words = [word for word in words if word]
-    if len(words) != 1:
-        return False
-    word = words[0]
-    if len(word) < 2 or word in _RESIDENT_NAME_STOPWORDS:
-        return False
-    return True
-
-
-def _detect_known_community_reference(query: str) -> tuple[int, str] | None:
-    q_lower = query.lower()
-    for community_id, community_name in LOCAL_DEMO_COMMUNITIES.items():
-        pattern = rf"(?<!\w){re.escape(community_name.lower())}(?!\w)"
-        if re.search(pattern, q_lower):
-            return community_id, community_name
-    return None
-
-
-def _is_known_community_name(candidate: str) -> bool:
-    candidate_lower = candidate.lower().strip(" .,?!")
-    if candidate_lower in _KNOWN_COMMUNITY_NAMES:
-        return True
-    return any(
-        community_name.startswith(candidate_lower)
-        for community_name in _KNOWN_COMMUNITY_NAMES
-    )
-
-
-def _is_known_community_name_fragment(candidate: str, query: str) -> bool:
-    candidate_lower = candidate.lower().strip(" .,?!")
-    if not candidate_lower:
-        return False
-    reference = _detect_known_community_reference(query)
-    if not reference:
-        return False
-    _community_id, community_name = reference
-    return candidate_lower in community_name.lower().split()
-
-
-def _community_scope_mismatch_response(query: str, community_id: int) -> dict | None:
-    reference = _detect_known_community_reference(query)
-    if not reference:
-        return None
-
-    requested_community_id, requested_community_name = reference
-    if requested_community_id == community_id:
-        return None
-
-    return {
-        "query": query,
-        "plan": {
-            "_macro": "community_scope_mismatch",
-            "requested_community_id": requested_community_id,
-            "requested_community_name": requested_community_name,
-            "current_community_id": community_id,
-            "current_community_name": get_community_name(community_id) or f"community ID {community_id}",
-        },
-        "answer": f"I couldn't find matching resident records for '{requested_community_name.lower()}'.",
-    }
-
-
-def _extract_resident_name(query: str) -> str | None:
-    q = query.lower().replace("’", "'").strip()
-    patterns = [
-        r"\b(?:h?ow\s+old\s+is|(?:what\s+is\s+)?(?:the\s+)?age\s+of)\s+(?:resident\s+|patient\s+)?([a-z]+(?:\s+[a-z]+){1,2})\b",
-        r"\bwho\s+is\s+(?:resident\s+|patient\s+)?([a-z]+(?:\s+[a-z]+){1,2})\b",
-        r"\b(?:what|which)\s+(?:flat|room)(?:\s+(?:number|no))?\s+(?:is|does)\s+(?:resident\s+|patient\s+)?([a-z]+(?:\s+[a-z]+){1,2})(?:\s+(?:in|have|has))?\b",
-        r"\b(?:where\s+(?:does|is))\s+(?:resident\s+|patient\s+)?([a-z]+(?:\s+[a-z]+){1,2})(?:\s+(?:stay|staying|live|living|assigned))?\b",
-        r"\b(?:what|which)\s+(?:medications?|medicine|prescription|prescriptions|intake|treatment)\s+(?:is|are|does|do)\s+(?:resident\s+|patient\s+)?([a-z]+(?:\s+[a-z]+){1,2})(?:\s+(?:prescribed|take|takes|taking|on|have|has))?\b",
-        r"\b(?:what\s+is|what's)\s+(?:resident\s+|patient\s+)?([a-z]+(?:\s+[a-z]+){1,2})(?:'s)?\s+(?:prescribed\s+)?(?:medications?|medicine|prescription|prescriptions|intake|treatment)\b",
-        r"\b([a-z]+(?:\s+[a-z]+){1,2})'s\b",
-        r"\b(?:resident|patient)\s+([a-z]+(?:\s+[a-z]+){1,2})\b",
-        r"\b(?:of|for|about)\s+([a-z]+(?:\s+[a-z]+){1,2})\b",
-        r"\b(?:of|for|about)\s+(?:the\s+)?(?:resident|patient)\s+([a-z]+(?:\s+[a-z]+){1,2})\b",
-        r"\b([a-z]+(?:\s+[a-z]+){1,2})\s+(?:medical history|health history|treatment plan|flat(?:\s+(?:number|no))?|room|age|history|intake|prescribed|medication)\b",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, q)
-        if match:
-            candidate = match.group(1).strip(" .,?!")
-            candidate = re.sub(
-                r"^(?:(?:what|who|is|the|of|for|about|resident|patient|me|my|give|show|tell|get|display|find|list|see|check)\s+)+",
-                "",
-                candidate,
-            ).strip()
-            candidate = re.sub(
-                r"\s+(?:medical|health|treatment|plan|flat|number|no|room|age|history|intake|prescribed|medication|in|have|has|stay|staying|live|living|assigned)$",
-                "",
-                candidate,
-            ).strip()
-            if candidate not in {
-                "his",
-                "her",
-                "their",
-                "the resident",
-                "the patient",
-                "all residents",
-                "all patients",
-                "residents",
-                "patients",
-                "these residents",
-                "those residents",
-                "community residents",
-            } and candidate not in _NON_RESIDENT_NAME_CANDIDATES and not _is_known_community_name(candidate) and _is_plausible_resident_name(candidate):
-                return candidate.title()
-    return None
-
-
-def _extract_resident_name_fragment(query: str) -> str | None:
-    q = query.lower().replace("’", "'").strip()
-    profile_tail = (
-        r"details?|profile|info|information|age|old|room|flat|"
-        r"medical history|health history|history|medication|prescribed|intake|treatment"
-    )
-    metric_tail = (
-        r"age|old|room|flat|medical history|health history|history|"
-        r"medication|prescribed|intake|treatment"
-    )
-    patterns = [
-        rf"\b(?:h?ow\s+old\s+is|(?:what\s+is\s+)?(?:the\s+)?age\s+of)\s+"
-        rf"(?:resident\s+|patient\s+)?([a-z]+)\b",
-        rf"\b(?:what|which)\s+(?:flat|room)(?:\s+(?:number|no))?\s+(?:is|does)\s+"
-        rf"(?:resident\s+|patient\s+)?([a-z]+)(?:\s+(?:in|have|has))?\b",
-        rf"\b(?:where\s+(?:does|is))\s+(?:resident\s+|patient\s+)?([a-z]+)"
-        rf"(?:\s+(?:stay|staying|live|living|assigned))?\b",
-        rf"\b(?:what|which)\s+(?:medications?|medicine|prescription|prescriptions|intake|treatment)\s+"
-        rf"(?:is|are|does|do)\s+(?:resident\s+|patient\s+)?([a-z]+)"
-        rf"(?:\s+(?:prescribed|take|takes|taking|on|have|has))?\b",
-        rf"\b(?:what\s+is|what's)\s+(?:resident\s+|patient\s+)?([a-z]+)(?:'s)?\s+"
-        rf"(?:prescribed\s+)?(?:medications?|medicine|prescription|prescriptions|intake|treatment)\b",
-        rf"\b(?:give|show|display|get|tell)\b(?:\s+me)?(?:\s+the)?\s+(?:{profile_tail})\s+"
-        rf"(?:of|for|about)\s+(?:resident\s+|patient\s+)?([a-z]+)\b",
-        rf"\b(?:{profile_tail})\s+(?:of|for|about)\s+(?:resident\s+|patient\s+)?([a-z]+)\b",
-        rf"\b(?:what\s+is|what's|where\s+(?:does|is))\s+(?:resident\s+|patient\s+)?"
-        rf"([a-z]+)(?:'s)?\s+(?:{metric_tail})\b",
-        rf"\b([a-z]+)\s+(?:{profile_tail})\b",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, q)
-        if match:
-            candidate = match.group(1).strip(" .,?!")
-            if (
-                candidate not in _NON_RESIDENT_NAME_CANDIDATES
-                and not _is_known_community_name_fragment(candidate, query)
-                and _is_plausible_resident_name_fragment(candidate)
-            ):
-                return candidate.title()
-    return None
-
-
-def _extract_resident_id(query: str) -> int | None:
-    q = query.lower().strip()
-    if not re.search(r"\b(?:resident|patient)\b", q):
-        return None
-
-    patterns = [
-        r"\b(?:resident|patient)\s+(?:with\s+)?(?:the\s+)?(?:id|number|no\.?|#)\s*(?:is\s*)?(\d+)\b",
-        r"\b(?:resident|patient)\s+#\s*(\d+)\b",
-        r"\b(?:id|number|no\.?|#)\s*(?:is\s*)?(\d+)\b",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, q)
-        if match:
-            return int(match.group(1))
-    return None
-
-
+from app.retrievers._sql.names import (  # noqa: F401
+    _is_plausible_resident_name,
+    _is_plausible_resident_name_fragment,
+    _detect_known_community_reference,
+    _is_known_community_name,
+    _is_known_community_name_fragment,
+    _community_scope_mismatch_response,
+    _extract_resident_name,
+    _extract_resident_name_fragment,
+    _extract_resident_id,
+)
 def _resident_profile_rule_for_query(query: str) -> dict | None:
     q_lower = query.lower()
     if _has_ranking_request(q_lower):
@@ -3511,63 +2413,13 @@ def _format_empty_metric_ranking_answer(plan: dict) -> str:
     return f"I couldn't find matching {metric_label} records."
 
 
-def _to_float(value) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _format_sleep_duration(value, missing: str = "not recorded") -> str:
-    minutes = _to_float(value)
-    if minutes is None:
-        return missing
-
-    total_minutes = int(round(minutes))
-    sign = "-" if total_minutes < 0 else ""
-    hours, remaining_minutes = divmod(abs(total_minutes), 60)
-    if remaining_minutes == 0:
-        return f"{sign}{hours}h"
-    return f"{sign}{hours}h {remaining_minutes}m"
-
-
-def _metric_text(value, suffix: str = "") -> str:
-    if value is None:
-        return "not recorded"
-    return f"{value}{suffix}"
-
-
-def _metric_explanation(metric: str) -> str:
-    if metric == "bp":
-        return "Blood pressure is a latest recorded vital, not live monitoring. Elevated values should be reviewed with clinical context."
-    if metric == "sugar":
-        return "Sugar level is a latest recorded reading and should be compared with the resident's usual range and care plan."
-    if metric == "steps":
-        return "Step count is a movement signal. Low values can reflect reduced activity, device non-wear, or missed synchronization."
-    if metric == "sleep_duration":
-        return "Sleep duration shows recorded rest time. Short or repeated low duration can be a useful review signal."
-    if metric == "sleep_quality":
-        return "Sleep quality score is a care-review signal. Lower scores can point to poorer rest or a data-quality issue."
-    if metric == "sleep":
-        return "Sleep duration and sleep quality should be read together before deciding whether follow-up is needed."
-    return "Use this value as recorded operational context and review it with related resident metrics."
-
-
-def _metric_next_step(metric: str, name: str | None = None) -> str:
-    subject = name if name else "the resident"
-    if metric in {"sleep_quality", "sleep_duration", "sleep"}:
-        return f"Next step: Check {subject}'s sleep duration, activity, and device sync status before deciding on follow-up. This is not a diagnosis."
-    if metric == "steps":
-        return f"Next step: Compare {subject}'s steps with recent sleep and health readings, and confirm the device was worn. This is not a diagnosis."
-    if metric == "bp":
-        return f"Next step: Review {subject}'s BP with recent sugar, sleep, symptoms, and the care protocol. This is not a diagnosis."
-    if metric == "sugar":
-        return f"Next step: Review {subject}'s sugar trend with meal timing, medication context, and care protocol. This is not a diagnosis."
-    return f"Next step: Review related metrics for {subject} before making an operational care decision."
-
-
+from app.retrievers._sql.text_utils import (  # noqa: F401
+    _to_float,
+    _format_sleep_duration,
+    _metric_text,
+    _metric_explanation,
+    _metric_next_step,
+)
 def _score_care_row(row: tuple) -> dict:
     def row_value(index: int, default=None):
         return row[index] if len(row) > index else default
@@ -4264,102 +3116,20 @@ def _profile_plan_with_bare_possessive_fallback(plan: dict) -> dict | None:
     return fallback_plan
 
 
-class UnsafeSQLError(ValueError):
-    """Raised when a generated SQL plan or statement is not a safe, read-only query."""
-
-
-_ALLOWED_TABLES = set(SCHEMA.keys())
-_ALLOWED_COLUMNS_BY_TABLE = {
-    table_name: set(meta["columns"]) for table_name, meta in SCHEMA.items()
-}
-_ALL_COLUMN_NAMES = {
-    column_name
-    for columns in _ALLOWED_COLUMNS_BY_TABLE.values()
-    for column_name in columns
-}
-_ALLOWED_FILTER_OPERATORS = {"=", "!=", "<>", "<", "<=", ">", ">=", "LIKE", "ILIKE"}
-_FORBIDDEN_SQL_RE = re.compile(
-    r"\b(?:INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|REPLACE|MERGE|CALL|"
-    r"EXEC|EXECUTE|GRANT|REVOKE|ATTACH|DETACH|PRAGMA|COPY|VACUUM|INTO|"
-    r"COMMIT|ROLLBACK|SAVEPOINT)\b",
-    re.IGNORECASE,
+from app.retrievers._sql.safety import (  # noqa: F401
+    UnsafeSQLError,
+    _ALLOWED_TABLES,
+    _ALLOWED_COLUMNS_BY_TABLE,
+    _ALL_COLUMN_NAMES,
+    _ALLOWED_FILTER_OPERATORS,
+    _FORBIDDEN_SQL_RE,
+    _SELECT_ONLY_RE,
+    _ensure_filters_list,
+    _reject_unsafe_sql,
+    _is_allowed_identifier,
+    _validate_plan_identifiers,
+    _validate_read_only_sql,
 )
-_SELECT_ONLY_RE = re.compile(r"^\s*SELECT\b", re.IGNORECASE)
-
-
-def _ensure_filters_list(raw_filters) -> list:
-    """Normalize a plan's filters into a list (a lone filter dict becomes [dict])."""
-    if isinstance(raw_filters, dict):
-        return [raw_filters]
-    if isinstance(raw_filters, list):
-        return raw_filters
-    return []
-
-
-def _reject_unsafe_sql(reason: str) -> None:
-    """Log the technical reason for developers and raise a safe-to-bubble error."""
-    logger.warning(f"Rejected unsafe SQL: {reason}")
-    raise UnsafeSQLError(reason)
-
-
-def _is_allowed_identifier(token: str) -> bool:
-    """True only for a known schema column, optionally table-qualified."""
-    token = token.strip()
-    if not token:
-        return False
-    if "." in token:
-        table_part, _, column_part = token.partition(".")
-        table_part = table_part.strip()
-        return (
-            table_part in _ALLOWED_TABLES
-            and column_part.strip() in _ALLOWED_COLUMNS_BY_TABLE.get(table_part, set())
-        )
-    return token in _ALL_COLUMN_NAMES
-
-
-def _validate_plan_identifiers(plan: dict) -> None:
-    """Reject any table/column/order_by/operator not in the schema allowlist.
-
-    Values are always bound as query parameters, so only identifiers are checked
-    here. This is the structural half of the read-only guarantee; the built SQL
-    string is checked again by _validate_read_only_sql.
-    """
-    table_name = str(plan.get("table", "residents")).strip()
-    if table_name not in _ALLOWED_TABLES:
-        _reject_unsafe_sql(f"disallowed table in plan: {table_name!r}")
-
-    for part in str(plan.get("column", "residents.name")).split(","):
-        if not _is_allowed_identifier(part):
-            _reject_unsafe_sql(f"disallowed column in plan: {part.strip()!r}")
-
-    order_by = plan.get("order_by")
-    if order_by and not _is_allowed_identifier(str(order_by)):
-        _reject_unsafe_sql(f"disallowed order_by in plan: {order_by!r}")
-
-    for item in _ensure_filters_list(plan.get("filters", [])):
-        if not isinstance(item, dict):
-            continue
-        column = item.get("column")
-        if column is not None and not _is_allowed_identifier(str(column)):
-            _reject_unsafe_sql(f"disallowed filter column in plan: {column!r}")
-        operator = str(item.get("operator", "=")).strip().upper()
-        if operator not in _ALLOWED_FILTER_OPERATORS:
-            _reject_unsafe_sql(f"disallowed filter operator in plan: {operator!r}")
-
-
-def _validate_read_only_sql(sql: str) -> None:
-    """Defense-in-depth: ensure the built statement is a single read-only SELECT."""
-    statement = sql.strip().rstrip(";").strip()
-    if ";" in statement:
-        _reject_unsafe_sql("multiple SQL statements are not allowed")
-    if "--" in statement or "/*" in statement:
-        _reject_unsafe_sql("SQL comments are not allowed")
-    if not _SELECT_ONLY_RE.match(statement):
-        _reject_unsafe_sql("only SELECT statements are allowed")
-    if _FORBIDDEN_SQL_RE.search(statement):
-        _reject_unsafe_sql("disallowed SQL keyword detected")
-
-
 def build_sql(plan: dict, community_id: int) -> tuple[str, list]:
     # Read-only safety: validate the plan's identifiers against the schema
     # allowlist before constructing any SQL string.
@@ -4493,186 +3263,257 @@ def normalize_filters(plan: dict) -> dict:
     plan["filters"] = normalized
     return plan
 
+# ---------------------------------------------------------------------------
+# Deterministic dispatch
+#
+# _SQL_DISPATCH_STEPS is the SINGLE place that defines macro precedence.
+# handle_sql tries each step in order and returns the first non-None response;
+# if none match it falls back to the LLM planner. Each step mirrors one former
+# branch of the handle_sql cascade, so precedence is now explicit and editable
+# in one location instead of buried in a long if-chain. Every step takes
+# (query, community_id) and returns a response dict or None.
+# ---------------------------------------------------------------------------
+
+
+def _step_community_scope_mismatch(query, community_id):
+    return _community_scope_mismatch_response(query, community_id)
+
+
+def _step_device_status(query, community_id):
+    plan = _detect_device_status_plan(query)
+    if not plan:
+        return None
+    logger.info(f"Using deterministic device status plan: {plan}")
+    response = _run_device_status(plan)
+    response["query"] = query
+    return response
+
+
+def _step_resident_list(query, community_id):
+    plan = _detect_resident_list_plan(query)
+    if not plan:
+        return None
+    logger.info(f"Using deterministic resident list plan: {plan}")
+    sql, params = build_sql(plan, community_id)
+    result = run_query(sql, params)
+    return {
+        "query": query,
+        "plan": plan,
+        "sql": sql,
+        "result": result,
+        "answer": _format_resident_list_answer(result),
+    }
+
+
+def _step_multi_resident_metric(query, community_id):
+    response = _run_multi_resident_metric(query, community_id)
+    if response:
+        logger.info(f"Using deterministic multi-resident metric plan: {response.get('plan')}")
+    return response
+
+
+def _step_resident_average_metric(query, community_id):
+    plan = _detect_resident_average_metric_plan(query)
+    if not plan:
+        return None
+    logger.info(f"Using deterministic resident average metric plan: {plan}")
+    named_average_response = _run_named_resident_average_metric(query, plan, community_id)
+    if named_average_response:
+        return named_average_response
+    response = _run_resident_average_metric(plan, community_id)
+    response["query"] = query
+    return response
+
+
+def _step_named_resident_metric(query, community_id):
+    named_metric = _detect_named_resident_metric(query)
+    if not named_metric:
+        return None
+    response = _run_named_resident_metric(query, named_metric, community_id)
+    if response:
+        logger.info(f"Using deterministic named resident metric plan: {response.get('plan')}")
+    return response
+
+
+def _step_metric_threshold(query, community_id):
+    plan = _detect_metric_threshold_plan(query)
+    if not plan:
+        return None
+    logger.info(f"Using deterministic metric threshold plan: {plan}")
+    response = _run_metric_threshold(plan, community_id)
+    response["query"] = query
+    return response
+
+
+def _step_resident_metric_summary(query, community_id):
+    plan = _detect_resident_metric_summary_plan(query)
+    if not plan:
+        return None
+    logger.info(f"Using deterministic resident metric summary plan: {plan}")
+    plan["_query"] = query
+    response = _run_resident_metric_summary(plan, community_id)
+    response["query"] = query
+    return response
+
+
+def _step_age_care_assessment(query, community_id):
+    if not _is_age_care_assessment_query(query):
+        return None
+    logger.info("Executing deterministic age-aware care assessment macro...")
+    return _run_care_assessment(query, community_id)
+
+
+def _step_resident_aggregate(query, community_id):
+    plan = _detect_resident_aggregate_plan(query)
+    if not plan:
+        return None
+    logger.info(f"Using deterministic resident aggregate plan: {plan}")
+    if plan.get("_macro") == "resident_age_ranking":
+        sql, params = build_sql(plan, community_id)
+        result = run_query(sql, params)
+        return {
+            "query": query,
+            "plan": plan,
+            "sql": sql,
+            "result": result,
+            "answer": _format_resident_age_ranking_answer(plan, result),
+        }
+    response = _run_resident_aggregate(plan, community_id)
+    response["query"] = query
+    return response
+
+
+def _step_resident_text_search(query, community_id):
+    plan = _detect_resident_text_search_plan(query)
+    if not plan:
+        return None
+    logger.info(f"Using deterministic resident text search plan: {plan}")
+    response = _run_resident_text_search(plan, community_id)
+    response["query"] = query
+    return response
+
+
+def _step_multi_resident_profile(query, community_id):
+    response = _run_multi_resident_profile(query, community_id)
+    if response:
+        logger.info(f"Using deterministic multi-resident profile plan: {response.get('plan')}")
+    return response
+
+
+def _step_direct_resident_profile(query, community_id):
+    plan = None if _is_care_assessment_query(query) else _detect_resident_profile_plan(query)
+    if not plan:
+        return None
+    logger.info(f"Using deterministic resident profile plan: {plan}")
+    sql, params = build_sql(plan, community_id)
+    result = run_query(sql, params)
+    if not result:
+        fallback_plan = _profile_plan_with_bare_possessive_fallback(plan)
+        if fallback_plan:
+            fallback_sql, fallback_params = build_sql(fallback_plan, community_id)
+            fallback_result = run_query(fallback_sql, fallback_params)
+            if fallback_result:
+                plan = fallback_plan
+                sql = fallback_sql
+                result = fallback_result
+    if not result:
+        return {
+            "query": query,
+            "plan": plan,
+            "sql": sql,
+            "result": result,
+            "answer": f"I couldn't find matching resident records for '{query}'.",
+        }
+    answer = _format_resident_profile_answer(
+        plan["_profile_field"], result,
+    ) or _synthesize_answer(query, plan.get("column", ""), result)
+    return {
+        "query": query,
+        "plan": plan,
+        "sql": sql,
+        "result": result,
+        "answer": answer,
+    }
+
+
+def _step_resident_collection_profile(query, community_id):
+    plan = _detect_resident_collection_profile_plan(query)
+    if not plan:
+        return None
+    logger.info(f"Using deterministic resident collection profile plan: {plan}")
+    sql, params = build_sql(plan, community_id)
+    result = run_query(sql, params)
+    return {
+        "query": query,
+        "plan": plan,
+        "sql": sql,
+        "result": result,
+        "answer": _format_resident_collection_profile_answer(plan, result),
+    }
+
+
+def _step_metric_ranking(query, community_id):
+    plan = _detect_metric_ranking_plan(query)
+    if not plan:
+        return None
+    logger.info(f"Using deterministic metric ranking plan: {plan}")
+    sql, params = build_sql(plan, community_id)
+    result = run_query(sql, params)
+    if not result:
+        return {
+            "query": query,
+            "plan": plan,
+            "sql": sql,
+            "result": result,
+            "answer": _format_empty_metric_ranking_answer(plan),
+        }
+    answer = _format_metric_ranking_answer(query, plan, result) or _synthesize_answer(
+        query, plan.get("column", ""), result
+    )
+    return {
+        "query": query,
+        "plan": plan,
+        "sql": sql,
+        "result": result,
+        "answer": answer,
+    }
+
+
+def _step_care_assessment(query, community_id):
+    if not _is_care_assessment_query(query):
+        return None
+    logger.info("Executing deterministic care assessment macro...")
+    return _run_care_assessment(query, community_id)
+
+
+# Precedence order is significant and intentional; edit here to change routing.
+_SQL_DISPATCH_STEPS = [
+    _step_community_scope_mismatch,
+    _step_device_status,
+    _step_resident_list,
+    _step_multi_resident_metric,
+    _step_resident_average_metric,
+    _step_named_resident_metric,
+    _step_metric_threshold,
+    _step_resident_metric_summary,
+    _step_age_care_assessment,
+    _step_resident_aggregate,
+    _step_resident_text_search,
+    _step_multi_resident_profile,
+    _step_direct_resident_profile,
+    _step_resident_collection_profile,
+    _step_metric_ranking,
+    _step_care_assessment,
+]
+
+
+
 def handle_sql(query: str, community_id: int) -> dict:
     try:
-        community_scope_mismatch = _community_scope_mismatch_response(query, community_id)
-        if community_scope_mismatch:
-            return community_scope_mismatch
-
-        device_status_plan = _detect_device_status_plan(query)
-        if device_status_plan:
-            logger.info(f"Using deterministic device status plan: {device_status_plan}")
-            response = _run_device_status(device_status_plan)
-            response["query"] = query
-            return response
-
-        resident_list_plan = _detect_resident_list_plan(query)
-        if resident_list_plan:
-            logger.info(f"Using deterministic resident list plan: {resident_list_plan}")
-            sql, params = build_sql(resident_list_plan, community_id)
-            result = run_query(sql, params)
-
-            return {
-                "query": query,
-                "plan": resident_list_plan,
-                "sql": sql,
-                "result": result,
-                "answer": _format_resident_list_answer(result),
-            }
-
-        multi_metric_response = _run_multi_resident_metric(query, community_id)
-        if multi_metric_response:
-            logger.info(f"Using deterministic multi-resident metric plan: {multi_metric_response.get('plan')}")
-            return multi_metric_response
-
-        resident_average_metric_plan = _detect_resident_average_metric_plan(query)
-        if resident_average_metric_plan:
-            logger.info(f"Using deterministic resident average metric plan: {resident_average_metric_plan}")
-            named_average_response = _run_named_resident_average_metric(query, resident_average_metric_plan, community_id)
-            if named_average_response:
-                return named_average_response
-            response = _run_resident_average_metric(resident_average_metric_plan, community_id)
-            response["query"] = query
-            return response
-
-        named_metric = _detect_named_resident_metric(query)
-        if named_metric:
-            named_metric_response = _run_named_resident_metric(query, named_metric, community_id)
-            if named_metric_response:
-                logger.info(f"Using deterministic named resident metric plan: {named_metric_response.get('plan')}")
-                return named_metric_response
-
-        metric_threshold_plan = _detect_metric_threshold_plan(query)
-        if metric_threshold_plan:
-            logger.info(f"Using deterministic metric threshold plan: {metric_threshold_plan}")
-            response = _run_metric_threshold(metric_threshold_plan, community_id)
-            response["query"] = query
-            return response
-
-        resident_metric_summary_plan = _detect_resident_metric_summary_plan(query)
-        if resident_metric_summary_plan:
-            logger.info(f"Using deterministic resident metric summary plan: {resident_metric_summary_plan}")
-            resident_metric_summary_plan["_query"] = query
-            response = _run_resident_metric_summary(resident_metric_summary_plan, community_id)
-            response["query"] = query
-            return response
-
-        if _is_age_care_assessment_query(query):
-            logger.info("Executing deterministic age-aware care assessment macro...")
-            return _run_care_assessment(query, community_id)
-
-        resident_aggregate_plan = _detect_resident_aggregate_plan(query)
-        if resident_aggregate_plan:
-            logger.info(f"Using deterministic resident aggregate plan: {resident_aggregate_plan}")
-            if resident_aggregate_plan.get("_macro") == "resident_age_ranking":
-                sql, params = build_sql(resident_aggregate_plan, community_id)
-                result = run_query(sql, params)
-                return {
-                    "query": query,
-                    "plan": resident_aggregate_plan,
-                    "sql": sql,
-                    "result": result,
-                    "answer": _format_resident_age_ranking_answer(resident_aggregate_plan, result),
-                }
-
-            response = _run_resident_aggregate(resident_aggregate_plan, community_id)
-            response["query"] = query
-            return response
-
-        resident_text_search_plan = _detect_resident_text_search_plan(query)
-        if resident_text_search_plan:
-            logger.info(f"Using deterministic resident text search plan: {resident_text_search_plan}")
-            response = _run_resident_text_search(resident_text_search_plan, community_id)
-            response["query"] = query
-            return response
-
-        multi_profile_response = _run_multi_resident_profile(query, community_id)
-        if multi_profile_response:
-            logger.info(f"Using deterministic multi-resident profile plan: {multi_profile_response.get('plan')}")
-            return multi_profile_response
-
-        direct_profile_plan = None if _is_care_assessment_query(query) else _detect_resident_profile_plan(query)
-        if direct_profile_plan:
-            logger.info(f"Using deterministic resident profile plan: {direct_profile_plan}")
-            sql, params = build_sql(direct_profile_plan, community_id)
-            result = run_query(sql, params)
-            if not result:
-                fallback_profile_plan = _profile_plan_with_bare_possessive_fallback(direct_profile_plan)
-                if fallback_profile_plan:
-                    fallback_sql, fallback_params = build_sql(fallback_profile_plan, community_id)
-                    fallback_result = run_query(fallback_sql, fallback_params)
-                    if fallback_result:
-                        direct_profile_plan = fallback_profile_plan
-                        sql = fallback_sql
-                        result = fallback_result
-
-            if not result:
-                return {
-                    "query": query,
-                    "plan": direct_profile_plan,
-                    "sql": sql,
-                    "result": result,
-                    "answer": f"I couldn't find matching resident records for '{query}'.",
-                }
-
-            answer = _format_resident_profile_answer(
-                direct_profile_plan["_profile_field"],
-                result,
-            ) or _synthesize_answer(query, direct_profile_plan.get("column", ""), result)
-
-            return {
-                "query": query,
-                "plan": direct_profile_plan,
-                "sql": sql,
-                "result": result,
-                "answer": answer,
-            }
-
-        resident_collection_profile_plan = _detect_resident_collection_profile_plan(query)
-        if resident_collection_profile_plan:
-            logger.info(f"Using deterministic resident collection profile plan: {resident_collection_profile_plan}")
-            sql, params = build_sql(resident_collection_profile_plan, community_id)
-            result = run_query(sql, params)
-
-            return {
-                "query": query,
-                "plan": resident_collection_profile_plan,
-                "sql": sql,
-                "result": result,
-                "answer": _format_resident_collection_profile_answer(resident_collection_profile_plan, result),
-            }
-
-        direct_metric_plan = _detect_metric_ranking_plan(query)
-        if direct_metric_plan:
-            logger.info(f"Using deterministic metric ranking plan: {direct_metric_plan}")
-            sql, params = build_sql(direct_metric_plan, community_id)
-            result = run_query(sql, params)
-
-            if not result:
-                return {
-                    "query": query,
-                    "plan": direct_metric_plan,
-                    "sql": sql,
-                    "result": result,
-                    "answer": _format_empty_metric_ranking_answer(direct_metric_plan),
-                }
-
-            answer = _format_metric_ranking_answer(query, direct_metric_plan, result) or _synthesize_answer(
-                query, direct_metric_plan.get("column", ""), result
-            )
-
-            return {
-                "query": query,
-                "plan": direct_metric_plan,
-                "sql": sql,
-                "result": result,
-                "answer": answer,
-            }
-
-        # MACRO BYPASS: Handle complex multi-metric care analytics deterministically.
-        if _is_care_assessment_query(query):
-            logger.info("Executing deterministic care assessment macro...")
-            return _run_care_assessment(query, community_id)
+        for step in _SQL_DISPATCH_STEPS:
+            response = step(query, community_id)
+            if response is not None:
+                return response
 
         # Step 1: Generate & Parse Plan (Normal Single-Table Mode)
         plan_str = ask_sql_planner(query)
