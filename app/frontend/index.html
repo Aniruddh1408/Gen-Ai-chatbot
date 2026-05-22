@@ -125,6 +125,7 @@
         .new-chat-btn {
             width: 100%;
             min-height: 54px;
+            flex-shrink: 0;
             background: linear-gradient(135deg, var(--accent), #7d8cff);
             color: #fdfefe;
             box-shadow: 0 16px 32px rgba(0, 183, 255, 0.2);
@@ -133,7 +134,8 @@
         .brand-card {
             position: relative;
             overflow: hidden;
-            padding: 24px;
+            flex-shrink: 0;
+            padding: 24px 24px 22px;
             background:
                 linear-gradient(160deg, rgba(103, 214, 255, 0.16), rgba(255, 209, 102, 0.08)),
                 rgba(255, 255, 255, 0.03);
@@ -152,6 +154,8 @@
         }
 
         .eyebrow {
+            position: relative;
+            z-index: 1;
             display: inline-flex;
             align-items: center;
             gap: 10px;
@@ -175,23 +179,26 @@
         }
 
         .brand-card h1 {
+            position: relative;
+            z-index: 1;
             margin-top: 18px;
-            font-size: clamp(2rem, 3vw, 2.8rem);
-            line-height: 0.95;
-            letter-spacing: -0.06em;
+            font-size: clamp(2rem, 2.4vw, 2.45rem);
+            line-height: 1.08;
+            letter-spacing: 0;
         }
 
         .brand-card p {
-            margin-top: 14px;
-            max-width: 18rem;
+            position: relative;
+            z-index: 1;
+            margin-top: 12px;
+            max-width: 17.5rem;
             color: var(--text-soft);
-            line-height: 1.55;
-            font-size: 0.98rem;
+            line-height: 1.45;
+            font-size: 0.9rem;
         }
 
-        .sessions-card,
-        .assist-card,
-        .tip-card {
+        .sessions-card {
+            flex-shrink: 0;
             padding: 20px;
             border-radius: var(--radius-lg);
             background: rgba(255, 255, 255, 0.03);
@@ -216,18 +223,28 @@
             font-weight: 500;
         }
 
-        .assist-list {
-            margin-top: 14px;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-
         .session-list {
             margin-top: 14px;
             display: flex;
             flex-direction: column;
             gap: 8px;
+            max-height: 262px;
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding-right: 4px;
+            overscroll-behavior: contain;
+            scrollbar-gutter: stable;
+        }
+
+        .session-list::-webkit-scrollbar {
+            width: 10px;
+        }
+
+        .session-list::-webkit-scrollbar-thumb {
+            background: rgba(157, 191, 255, 0.18);
+            border-radius: 999px;
+            border: 2px solid transparent;
+            background-clip: content-box;
         }
 
         .session-row {
@@ -295,75 +312,17 @@
             font-size: 0.86rem;
         }
 
-        .assist-item {
-            padding: 12px 14px;
-            border-radius: var(--radius-sm);
-            background: rgba(255, 255, 255, 0.025);
-            border: 1px solid rgba(157, 191, 255, 0.08);
-            color: var(--text-soft);
-            line-height: 1.5;
-            font-size: 0.9rem;
-        }
-
-        .assist-item strong {
-            display: block;
-            color: var(--text-main);
-            margin-bottom: 4px;
-        }
-
-        .tip-card {
-            margin-top: auto;
-            background:
-                linear-gradient(180deg, rgba(255, 209, 102, 0.09), transparent 100%),
-                rgba(255, 255, 255, 0.02);
-        }
-
-        .tip-card p {
-            margin-top: 10px;
-            color: var(--text-soft);
-            line-height: 1.6;
-            font-size: 0.92rem;
-        }
-
         .workspace {
             display: grid;
-            grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+            grid-template-rows: minmax(0, 1fr) auto auto;
             overflow: hidden;
-        }
-
-        .workspace-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            gap: 18px;
-            padding: 26px 28px 20px;
-        }
-
-        .workspace-title h2 {
-            font-size: clamp(1.4rem, 2vw, 2.2rem);
-            letter-spacing: -0.05em;
-        }
-
-        .workspace-title p {
-            margin-top: 8px;
-            color: var(--text-soft);
-            line-height: 1.5;
-            max-width: 38rem;
-        }
-
-        .header-actions {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            flex-wrap: wrap;
-            justify-content: flex-end;
-            margin-left: auto;
         }
 
         .community-control {
             display: grid;
             gap: 6px;
-            min-width: 230px;
+            width: 100%;
+            flex-shrink: 0;
             padding: 10px 12px;
             border-radius: 18px;
             border: 1px solid rgba(103, 214, 255, 0.18);
@@ -395,65 +354,8 @@
             outline: none;
         }
 
-        .prompt-picker {
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) auto;
-            gap: 12px;
-            padding: 0 28px 18px;
-        }
-
-        .picker-shell {
-            position: relative;
-        }
-
-        .picker-shell::after {
-            content: "▾";
-            position: absolute;
-            right: 18px;
-            top: 50%;
-            transform: translateY(-50%);
-            color: var(--text-muted);
-            pointer-events: none;
-            font-size: 1rem;
-        }
-
-        .prompt-select {
-            appearance: none;
-            width: 100%;
-            border: 1px solid rgba(157, 191, 255, 0.16);
-            background: rgba(255, 255, 255, 0.03);
-            color: var(--text-soft);
-            border-radius: 18px;
-            padding: 14px 44px 14px 16px;
-            font-family: inherit;
-            font-size: 0.88rem;
-            cursor: pointer;
-            transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
-        }
-
-        .prompt-select:hover,
-        .prompt-select:focus {
-            border-color: rgba(103, 214, 255, 0.38);
-            background: rgba(103, 214, 255, 0.1);
-            box-shadow: 0 0 0 4px rgba(103, 214, 255, 0.08);
-            outline: none;
-        }
-
-        .prompt-hint {
-            display: inline-flex;
-            align-items: center;
-            padding: 0 16px;
-            border-radius: 999px;
-            background: rgba(255, 255, 255, 0.04);
-            border: 1px solid rgba(157, 191, 255, 0.1);
-            color: var(--text-muted);
-            font-size: 0.8rem;
-            letter-spacing: 0.06em;
-            text-transform: uppercase;
-        }
-
         .chat-frame {
-            margin: 0 18px 18px;
+            margin: 18px;
             border-radius: var(--radius-xl);
             background: rgba(5, 16, 30, 0.72);
             border: 1px solid rgba(157, 191, 255, 0.08);
@@ -780,18 +682,10 @@
             }
 
             .sidebar,
-            .workspace-header,
-            .prompt-picker,
             #chat-history,
             .composer {
                 padding-left: 18px;
                 padding-right: 18px;
-            }
-
-            .workspace-header {
-                padding-top: 20px;
-                flex-direction: column;
-                align-items: flex-start;
             }
 
             .chat-frame,
@@ -809,16 +703,16 @@
                 max-width: 92%;
             }
 
-            .prompt-picker {
-                grid-template-columns: 1fr;
-            }
-
             .input-area {
                 grid-template-columns: 1fr;
             }
 
             .session-row {
                 grid-template-columns: 1fr;
+            }
+
+            .session-list {
+                max-height: 472px;
             }
 
             .session-actions {
@@ -831,14 +725,6 @@
                 min-height: 52px;
             }
 
-            .header-actions {
-                justify-content: flex-start;
-                width: 100%;
-            }
-
-            .community-control {
-                width: 100%;
-            }
         }
     </style>
 </head>
@@ -849,10 +735,19 @@
             <section class="brand-card">
                 <div class="eyebrow">Live Intelligence Console</div>
                 <h1>KuboCare AI</h1>
-                <p>Hybrid reasoning for resident analytics, clinical summaries, and device troubleshooting in one visible workspace.</p>
+                <p>Ask about residents, health metrics, care notes, and device issues in one chat.</p>
             </section>
 
             <button type="button" id="new-chat-btn" class="new-chat-btn">+ New Chat</button>
+
+            <label class="community-control" for="community-select">
+                <span>Local Community</span>
+                <select id="community-select" class="community-select">
+                    <option value="1">Green Valley Care</option>
+                    <option value="2">Sunrise Senior Living</option>
+                    <option value="3">Lotus Wellness Home</option>
+                </select>
+            </label>
 
             <section class="sessions-card">
                 <div class="section-title">Recent Chats <span>Local</span></div>
@@ -860,62 +755,9 @@
                     <p class="session-empty">No recent chats yet.</p>
                 </div>
             </section>
-
-            <section class="assist-card">
-                <div class="section-title">What It Handles <span>Core Modes</span></div>
-                <div class="assist-list">
-                    <div class="assist-item">
-                        <strong>Resident Analytics</strong>
-                        Ask for best performers, lowest scores, charts, comparisons, and summaries.
-                    </div>
-                    <div class="assist-item">
-                        <strong>Device Support</strong>
-                        Troubleshoot error codes, blinking lights, firmware guidance, and operational instructions.
-                    </div>
-                    <div class="assist-item">
-                        <strong>Context-Aware Follow-Up</strong>
-                        Continue with questions like "what is his score?" without restating the resident name.
-                    </div>
-                </div>
-            </section>
-
-            <section class="tip-card">
-                <div class="section-title">Operator Tip <span>Precision</span></div>
-                <p>Queries with exact resident names, metric names, or device symptoms return faster and more reliable results than generic requests.</p>
-            </section>
         </aside>
 
         <main class="workspace panel">
-            <header class="workspace-header">
-                <div class="workspace-title">
-                    <h2>Resident + Device Intelligence</h2>
-                    <p>Ask naturally, inspect results clearly, and surface charts inline without leaving the conversation.</p>
-                </div>
-                <div class="header-actions">
-                    <label class="community-control" for="community-select">
-                        <span>Local Community</span>
-                        <select id="community-select" class="community-select">
-                            <option value="1">Green Valley Care</option>
-                            <option value="2">Sunrise Senior Living</option>
-                            <option value="3">Lotus Wellness Home</option>
-                        </select>
-                    </label>
-                </div>
-            </header>
-
-            <section class="prompt-picker" aria-label="Suggested prompts">
-                <div class="picker-shell">
-                    <select id="prompt-select" class="prompt-select">
-                        <option value="">Choose a common question...</option>
-                        <option value="Which resident has the best sleep score?">Best sleep score</option>
-                        <option value="Give the details of Jason Murphy.">Resident details</option>
-                        <option value="What does error E-404 mean?">Explain E-404</option>
-                        <option value="My device is blinking red. What should I do?">Blinking red light</option>
-                    </select>
-                </div>
-                <div class="prompt-hint">Fill Input</div>
-            </section>
-
             <section class="chat-frame">
                 <div id="chat-history">
                     <div class="message ai">
@@ -960,7 +802,6 @@
         const typingIndicator = document.getElementById("typing-indicator");
         const sendBtn = document.getElementById("send-btn");
         const cancelBtn = document.getElementById("cancel-btn");
-        const promptSelect = document.getElementById("prompt-select");
         const communitySelect = document.getElementById("community-select");
         const newChatBtn = document.getElementById("new-chat-btn");
         const sessionList = document.getElementById("session-list");
@@ -981,8 +822,19 @@
         localStorage.setItem("kubo_community_id", String(communityId));
         const sessionStorageKey = `kubo_sessions_${communityId}`;
 
-        function createSessionId() {
-            return "session_" + Date.now();
+        function createSessionId(existingIds = new Set()) {
+            const makeId = () => {
+                if (window.crypto?.randomUUID) {
+                    return `session_${window.crypto.randomUUID()}`;
+                }
+                return `session_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+            };
+
+            let nextId = makeId();
+            while (existingIds.has(nextId)) {
+                nextId = makeId();
+            }
+            return nextId;
         }
 
         let sessionId = localStorage.getItem("kubo_session_id") || createSessionId();
@@ -998,7 +850,7 @@
         }
 
         function saveStoredSessions(sessions) {
-            localStorage.setItem(sessionStorageKey, JSON.stringify(sessions.slice(0, 8)));
+            localStorage.setItem(sessionStorageKey, JSON.stringify(sessions));
         }
 
         const maxLocalHistoryTurns = 50;
@@ -1069,34 +921,42 @@
             return trimmed ? trimmed.slice(0, 44) : "New chat";
         }
 
-    function touchSession(title = "") {
-        const sessions = getStoredSessions();
-        const existing = sessions.find((item) => item.id === sessionId);
+        function touchSession(title = "") {
+            const sessions = getStoredSessions();
+            const existing = sessions.find((item) => item.id === sessionId);
 
-        if (existing) {
-        // Only set title once, when it is still empty/default.
-        // Later prompts should not rename the chat.
-        if (title && (!existing.title || existing.title === "New chat")) {
-            existing.title = normalizeSessionTitle(title);
+            if (existing) {
+                // Only set title once, when it is still empty/default.
+                // Later prompts should not rename the chat.
+                if (title && (!existing.title || existing.title === "New chat")) {
+                    existing.title = normalizeSessionTitle(title);
+                }
+
+                existing.updatedAt = Date.now();
+            } else {
+                sessions.unshift({
+                    id: sessionId,
+                    title: title ? normalizeSessionTitle(title) : "New chat",
+                    updatedAt: Date.now()
+                });
+            }
+
+            sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+            saveStoredSessions(sessions);
+            renderSessionList({ scrollToTop: true });
         }
 
-        existing.updatedAt = Date.now();
-    } else {
-        sessions.unshift({
-            id: sessionId,
-            title: title ? normalizeSessionTitle(title) : "New chat",
-            updatedAt: Date.now()
-        });
-    }
+        function getSessionIndex(sessions, targetSessionId, targetIndex = -1) {
+            if (Number.isInteger(targetIndex) && sessions[targetIndex]?.id === targetSessionId) {
+                return targetIndex;
+            }
+            return sessions.findIndex((item) => item.id === targetSessionId);
+        }
 
-    sessions.sort((a, b) => b.updatedAt - a.updatedAt);
-    saveStoredSessions(sessions);
-    renderSessionList();
-}
-
-        function renameSession(targetSessionId) {
+        function renameSession(targetSessionId, targetIndex = -1) {
             const sessions = getStoredSessions();
-            const session = sessions.find((item) => item.id === targetSessionId);
+            const sessionIndex = getSessionIndex(sessions, targetSessionId, targetIndex);
+            const session = sessions[sessionIndex];
             if (!session) {
                 return;
             }
@@ -1107,8 +967,6 @@
             }
 
             session.title = normalizeSessionTitle(nextTitle);
-            session.updatedAt = Date.now();
-            sessions.sort((a, b) => b.updatedAt - a.updatedAt);
             saveStoredSessions(sessions);
             renderSessionList();
         }
@@ -1123,9 +981,10 @@
             }
         }
 
-        async function deleteSession(targetSessionId) {
+        async function deleteSession(targetSessionId, targetIndex = -1) {
             const sessions = getStoredSessions();
-            const session = sessions.find((item) => item.id === targetSessionId);
+            const sessionIndex = getSessionIndex(sessions, targetSessionId, targetIndex);
+            const session = sessions[sessionIndex];
             if (!session) {
                 return;
             }
@@ -1135,12 +994,16 @@
                 return;
             }
 
-            const remainingSessions = sessions.filter((item) => item.id !== targetSessionId);
+            const remainingSessions = sessions.filter((_item, index) => index !== sessionIndex);
+            const idStillUsed = remainingSessions.some((item) => item.id === targetSessionId);
+            const deletingActiveSession = sessionIndex === sessions.findIndex((item) => item.id === sessionId);
             saveStoredSessions(remainingSessions);
-            clearLocalHistory(targetSessionId);
-            await clearRemoteSession(targetSessionId);
+            if (!idStillUsed) {
+                clearLocalHistory(targetSessionId);
+                await clearRemoteSession(targetSessionId);
+            }
 
-            if (targetSessionId !== sessionId) {
+            if (!deletingActiveSession) {
                 renderSessionList();
                 return;
             }
@@ -1165,7 +1028,8 @@
             userInput.focus();
         }
 
-        function renderSessionList() {
+        function renderSessionList({ scrollToTop = false } = {}) {
+            const previousScrollTop = sessionList.scrollTop;
             const sessions = getStoredSessions();
             sessionList.innerHTML = "";
 
@@ -1174,10 +1038,11 @@
                 empty.className = "session-empty";
                 empty.textContent = "No recent chats yet.";
                 sessionList.appendChild(empty);
+                sessionList.scrollTop = 0;
                 return;
             }
 
-            sessions.forEach((session) => {
+            sessions.forEach((session, sessionIndex) => {
                 const row = document.createElement("div");
                 row.className = "session-row";
 
@@ -1198,20 +1063,28 @@
                 renameBtn.className = "session-action-btn";
                 renameBtn.textContent = "Rename";
                 renameBtn.setAttribute("aria-label", `Rename ${sessionLabel(session)}`);
-                renameBtn.addEventListener("click", () => renameSession(session.id));
+                renameBtn.addEventListener("click", (event) => {
+                    event.stopPropagation();
+                    renameSession(session.id, sessionIndex);
+                });
 
                 const deleteBtn = document.createElement("button");
                 deleteBtn.type = "button";
                 deleteBtn.className = "session-action-btn delete";
                 deleteBtn.textContent = "Delete";
                 deleteBtn.setAttribute("aria-label", `Delete ${sessionLabel(session)}`);
-                deleteBtn.addEventListener("click", () => deleteSession(session.id));
+                deleteBtn.addEventListener("click", (event) => {
+                    event.stopPropagation();
+                    deleteSession(session.id, sessionIndex);
+                });
 
                 actions.appendChild(renameBtn);
                 actions.appendChild(deleteBtn);
                 row.appendChild(actions);
                 sessionList.appendChild(row);
             });
+
+            sessionList.scrollTop = scrollToTop ? 0 : previousScrollTop;
         }
 
         function renderWelcomeMessage() {
@@ -1421,7 +1294,7 @@
         }
 
         function startNewChat() {
-            sessionId = createSessionId();
+            sessionId = createSessionId(new Set(getStoredSessions().map((session) => session.id)));
             localStorage.setItem("kubo_session_id", sessionId);
             touchSession("New chat");
             renderWelcomeMessage();
@@ -1466,15 +1339,6 @@
                 currentAbortController = null;
                 addMessage("ai", "Analysis cancelled by user.", true);
             }
-        });
-
-        promptSelect.addEventListener("change", () => {
-            if (!promptSelect.value) {
-                return;
-            }
-            userInput.value = promptSelect.value;
-            autoResizeInput();
-            userInput.focus();
         });
 
         chatForm.addEventListener("submit", async (event) => {

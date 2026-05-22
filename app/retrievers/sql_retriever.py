@@ -386,6 +386,44 @@ _DEVICE_METRIC_LABELS = {
     "cpu": "CPU",
 }
 
+_DEVICE_SIGNAL_REVIEW_THRESHOLD = -75.0
+_DEVICE_UPTIME_REVIEW_THRESHOLD = 95.0
+_DEVICE_CPU_REVIEW_THRESHOLD = 50.0
+
+_DEVICE_ISSUE_WORDS = [
+    "issue",
+    "issues",
+    "problem",
+    "problems",
+    "fault",
+    "faulty",
+    "error",
+    "errors",
+    "offline",
+    "down",
+    "broken",
+    "unstable",
+    "degraded",
+    "alert",
+    "alerts",
+    "anomaly",
+    "anomalies",
+    "concerning",
+    "bad",
+    "poor",
+]
+
+_DEVICE_ISSUE_PHRASES = [
+    "not working",
+    "not responding",
+    "has issues",
+    "have issues",
+    "having issues",
+    "has a problem",
+    "have a problem",
+    "acting up",
+]
+
 _NAMED_RESIDENT_METRIC_TERMS = [
     ("all_metrics", ["health metrics", "all metrics", "vital signs", "vitals"]),
     ("bp", ["bp", "blood pressure", "systolic", "diastolic"]),
@@ -415,6 +453,9 @@ _CARE_ASSESSMENT_KEYWORDS = [
     "lowest priority",
     "care priority",
     "overall health",
+    "health status",
+    "health condition",
+    "wellness status",
     "health metrics",
     "all metrics",
     "comprehensive",
@@ -554,6 +595,38 @@ _BROAD_CARE_PHRASES = [
     "all metrics",
     "comprehensive",
     "what about",
+]
+
+_SINGULAR_CARE_RANKING_PHRASES = [
+    "most care",
+    "most acre",
+    "requires most care",
+    "requires most acre",
+    "highest care",
+    "highest priority",
+    "highest risk",
+    "most at risk",
+    "least care",
+    "least acre",
+    "requires least care",
+    "requires least acre",
+    "lowest care",
+    "lowest priority",
+    "least priority",
+    "lowest risk",
+    "least risk",
+    "healthiest",
+    "most healthy",
+    "best health",
+    "best overall health",
+    "most stable",
+    "unhealthiest",
+    "most unhealthy",
+    "least healthy",
+    "worst health",
+    "poorest health",
+    "poor health",
+    "least stable",
 ]
 
 _ASC_RANKING_PATTERNS = [
@@ -2327,11 +2400,40 @@ def _device_metric_from_query(q_lower: str) -> str | None:
     return None
 
 
+def _has_device_issue_language(q_lower: str) -> bool:
+    if any(phrase in q_lower for phrase in _DEVICE_ISSUE_PHRASES):
+        return True
+    return any(re.search(rf"\b{re.escape(word)}\b", q_lower) for word in _DEVICE_ISSUE_WORDS)
+
+
+def _has_device_term(q_lower: str) -> bool:
+    return re.search(r"\b(?:device|devices|board|boards|telemetry)\b", q_lower) is not None
+
+
+def _needs_device_id_clarification(q_lower: str, board_id: str | None, metric: str | None) -> bool:
+    if board_id or not _has_device_term(q_lower):
+        return False
+
+    has_issue_language = _has_device_issue_language(q_lower)
+    personal_reference = re.search(r"\b(?:my|this|that)\s+(?:device|board)\b", q_lower) is not None
+    singular_issue_statement = (
+        "devices" not in q_lower
+        and "boards" not in q_lower
+        and has_issue_language
+        and not re.search(r"\b(?:which|what|show|list|all|any)\b", q_lower)
+    )
+
+    return (
+        personal_reference
+        and (has_issue_language or metric is not None or "status" in q_lower)
+    ) or singular_issue_statement
+
+
 def _is_device_query(query: str) -> bool:
     q_lower = query.lower()
     return (
         _extract_device_id(query) is not None
-        or any(term in q_lower for term in ["device", "devices", "board", "boards", "telemetry"])
+        or _has_device_term(q_lower)
         or _device_metric_from_query(q_lower) is not None
     )
 
@@ -2355,6 +2457,16 @@ def _detect_device_status_plan(query: str) -> dict | None:
     q_lower = query.lower().strip()
     board_id = _extract_device_id(query)
     metric = _device_metric_from_query(q_lower)
+    has_issue_language = _has_device_issue_language(q_lower)
+
+    if _needs_device_id_clarification(q_lower, board_id, metric):
+        return {"_macro": "device_clarification"}
+
+    if has_issue_language and board_id:
+        return {"_macro": "device_health_details", "board_id": board_id}
+
+    if has_issue_language:
+        return {"_macro": "device_issue_review"}
 
     if any(term in q_lower for term in ["average", "avg", "mean"]):
         if not metric:
@@ -2390,8 +2502,94 @@ def _format_device_row(row: tuple) -> str:
     )
 
 
+def _safe_float(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _device_review_flags(signal, uptime, cpu) -> list[str]:
+    flags = []
+    signal_value = _safe_float(signal)
+    uptime_value = _safe_float(uptime)
+    cpu_value = _safe_float(cpu)
+
+    if signal_value is not None and signal_value <= _DEVICE_SIGNAL_REVIEW_THRESHOLD:
+        flags.append(f"weak signal {signal}")
+    if uptime_value is not None and uptime_value < _DEVICE_UPTIME_REVIEW_THRESHOLD:
+        flags.append(f"low uptime {uptime}")
+    if cpu_value is not None and cpu_value >= _DEVICE_CPU_REVIEW_THRESHOLD:
+        flags.append(f"high CPU {cpu}")
+
+    return flags
+
+
+def _format_device_health_row(row: tuple) -> str:
+    board_id, _location, signal, uptime, cpu, _recorded_time = row
+    flags = _device_review_flags(signal, uptime, cpu)
+    if flags:
+        return f"{_format_device_row(row)} Review flags: {', '.join(flags)}."
+    return f"{_format_device_row(row)} No obvious review flags in the latest telemetry for {board_id}."
+
+
+def _device_issue_sort_key(item: tuple[tuple, list[str]]) -> tuple:
+    row, flags = item
+    board_id, _location, signal, uptime, cpu, _recorded_time = row
+    signal_value = _safe_float(signal)
+    uptime_value = _safe_float(uptime)
+    cpu_value = _safe_float(cpu)
+    return (
+        -len(flags),
+        signal_value if signal_value is not None else float("inf"),
+        uptime_value if uptime_value is not None else float("inf"),
+        -(cpu_value if cpu_value is not None else float("-inf")),
+        board_id,
+    )
+
+
+def _format_device_issue_review(result: list[tuple]) -> str:
+    if not result:
+        return "I couldn't find device status records."
+
+    flagged = []
+    for row in result:
+        _board_id, _location, signal, uptime, cpu, _recorded_time = row
+        flags = _device_review_flags(signal, uptime, cpu)
+        if flags:
+            flagged.append((row, flags))
+
+    if not flagged:
+        return (
+            "I don't see obvious device telemetry issues in the latest records. "
+            "Share the device ID if a specific device is acting up."
+        )
+
+    flagged.sort(key=_device_issue_sort_key)
+    lines = ["Device issue review:"]
+    for row, flags in flagged:
+        board_id, location, _signal, _uptime, _cpu, recorded_time = row
+        lines.append(
+            f"- {board_id} ({location or 'location not recorded'}): "
+            f"{', '.join(flags)}; time {recorded_time}."
+        )
+    return "\n".join(lines)
+
+
 def _run_device_status(plan: dict) -> dict:
     macro = plan.get("_macro")
+
+    if macro == "device_clarification":
+        return {
+            "query": "",
+            "plan": plan,
+            "sql": None,
+            "result": [],
+            "answer": (
+                "Which device ID should I check? Send an ID like DEV1 or DEV4, "
+                "or ask 'which devices have issues?' to compare all latest device records."
+            ),
+        }
 
     if macro == "device_details":
         sql = """
@@ -2403,6 +2601,35 @@ def _run_device_status(plan: dict) -> dict:
         """
         result = run_query(sql, (plan["board_id"],))
         answer = _format_device_row(result[0]) if result else f"I couldn't find device status for {plan['board_id']}."
+        return {"query": "", "plan": plan, "sql": sql, "result": result, "answer": answer}
+
+    if macro == "device_health_details":
+        sql = """
+        SELECT board_id, location, signal, uptime, cpu, time
+        FROM device_status
+        WHERE UPPER(board_id) = %s
+        ORDER BY time DESC
+        LIMIT 1;
+        """
+        result = run_query(sql, (plan["board_id"],))
+        answer = _format_device_health_row(result[0]) if result else f"I couldn't find device status for {plan['board_id']}."
+        return {"query": "", "plan": plan, "sql": sql, "result": result, "answer": answer}
+
+    if macro == "device_issue_review":
+        sql = """
+        WITH latest_device AS (
+            SELECT DISTINCT ON (UPPER(board_id))
+                board_id, location, signal, uptime, cpu, time
+            FROM device_status
+            ORDER BY UPPER(board_id), time DESC
+        )
+        SELECT board_id, location, signal, uptime, cpu, time
+        FROM latest_device
+        ORDER BY board_id ASC
+        LIMIT 100;
+        """
+        result = run_query(sql)
+        answer = _format_device_issue_review(result)
         return {"query": "", "plan": plan, "sql": sql, "result": result, "answer": answer}
 
     if macro == "device_ranking":
@@ -3493,6 +3720,9 @@ def _requested_care_display_count(q_lower: str) -> int:
     if _contains_care_phrase(q_lower, _BROAD_CARE_PHRASES):
         return 15
 
+    if _contains_care_phrase(q_lower, _SINGULAR_CARE_RANKING_PHRASES):
+        return 1
+
     return 5
 
 
@@ -3586,7 +3816,59 @@ def _care_window_summary(item: dict) -> str:
     return f"{_HEALTH_EVALUATION_DAYS}-day summary: {'; '.join(parts)}."
 
 
-def _format_named_care_assessment_answer(item: dict) -> str:
+def _asks_named_healthy_yes_no(query: str) -> bool:
+    q_lower = query.lower()
+    if _contains_care_phrase(q_lower, _UNHEALTHY_CARE_PHRASES):
+        return False
+    return re.search(r"\b(?:is|are|does|do|seems?|looks?)\b.*\bhealthy\b", q_lower) is not None
+
+
+def _asks_named_unhealthy_yes_no(query: str) -> bool:
+    q_lower = query.lower()
+    return _contains_care_phrase(q_lower, _UNHEALTHY_CARE_PHRASES)
+
+
+def _asks_named_health_status(query: str) -> bool:
+    q_lower = query.lower()
+    return any(
+        phrase in q_lower
+        for phrase in ["health status", "health condition", "wellness status", "overall health"]
+    )
+
+
+def _format_named_care_opening(item: dict, query: str = "") -> str:
+    name = item["name"]
+    priority = item["care_priority"]
+
+    if _asks_named_unhealthy_yes_no(query):
+        if priority == "High":
+            return f"Yes. {name} has high-priority review signals in this project's care heuristic."
+        if priority == "Moderate":
+            return f"Partly. {name} has moderate-priority review signals in this project's care heuristic."
+        return f"No. {name} is routine priority in this project's care heuristic."
+
+    if _asks_named_healthy_yes_no(query):
+        if priority == "High":
+            return f"No. {name} is high priority in this project's care heuristic."
+        if priority == "Moderate":
+            return f"Not fully. {name} should get closer review, but the priority is moderate rather than high."
+        return f"Yes, based on the recorded values, {name} is routine priority in this project's care heuristic."
+
+    if _asks_named_health_status(query):
+        if priority == "High":
+            return f"{name}'s recorded health status is High priority in this project's care heuristic."
+        if priority == "Moderate":
+            return f"{name}'s recorded health status is Moderate priority in this project's care heuristic."
+        return f"{name}'s recorded health status is Routine priority in this project's care heuristic."
+
+    if priority == "High":
+        return f"Yes. {name} is high priority in this project's care heuristic."
+    if priority == "Moderate":
+        return f"Yes, {name} should get closer review, but the priority is moderate rather than high."
+    return f"{name} is routine priority in this project's care heuristic, so there is no strong extra-care signal from the recorded values."
+
+
+def _format_named_care_assessment_answer(item: dict, query: str = "") -> str:
     name = item["name"]
     bp = f"{_metric_text(item['bp_systolic'])}/{_metric_text(item['bp_diastolic'])}"
     metrics = (
@@ -3596,13 +3878,7 @@ def _format_named_care_assessment_answer(item: dict) -> str:
         f"steps {_metric_text(item['steps_count'])}"
     )
     reasons = "; ".join(item["reasons"][:4])
-
-    if item["care_priority"] == "High":
-        opening = f"Yes. {name} is high priority in this project's care heuristic."
-    elif item["care_priority"] == "Moderate":
-        opening = f"Yes, {name} should get closer review, but the priority is moderate rather than high."
-    else:
-        opening = f"{name} is routine priority in this project's care heuristic, so there is no strong extra-care signal from the recorded values."
+    opening = _format_named_care_opening(item, query)
 
     return "\n".join([
         opening,
@@ -3644,7 +3920,7 @@ def _format_multiple_named_care_assessment_answer(query: str, items: list[dict])
         )
 
     lines.append(f"This is a data-prioritization heuristic using the last {_HEALTH_EVALUATION_DAYS} recorded days where available, not a diagnosis.")
-    return "\n".join(lines)
+    return "\n\n".join(lines)
 
 
 def _format_oldest_care_assessment_answer(assessments: list[dict]) -> str:
@@ -3710,11 +3986,11 @@ def _format_care_assessment_answer(query: str, assessments: list[dict]) -> str:
     if len(named_items) > 1:
         return _format_multiple_named_care_assessment_answer(query, named_items)
     if len(named_items) == 1:
-        return _format_named_care_assessment_answer(named_items[0])
+        return _format_named_care_assessment_answer(named_items[0], query)
 
     named_item = _find_single_named_care_assessment(query, assessments)
     if named_item:
-        return _format_named_care_assessment_answer(named_item)
+        return _format_named_care_assessment_answer(named_item, query)
 
     q_lower = query.lower()
     if _is_age_care_assessment_query(query):
@@ -3751,7 +4027,7 @@ def _format_care_assessment_answer(query: str, assessments: list[dict]) -> str:
         )
 
     lines.append(f"This is a data-prioritization heuristic using the last {_HEALTH_EVALUATION_DAYS} recorded days where available, not a diagnosis.")
-    return "\n".join(lines)
+    return "\n\n".join(lines)
 
 
 def _run_care_assessment(query: str, community_id: int) -> dict:
