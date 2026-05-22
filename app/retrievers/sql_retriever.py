@@ -7,6 +7,7 @@ from app.core.community import LOCAL_DEMO_COMMUNITIES, get_community_name
 from app.llm.client import ask_llm, ask_sql_planner
 from app.core.db import run_query
 from app.core.logger import get_logger
+from app.schema.schema import SCHEMA
 
 logger = get_logger("sql_retriever")
 
@@ -30,9 +31,22 @@ STRICT RULES:
 12. **UNIT CONVERSION**: Convert minutes to "7h 20m" style.
 13. **ANALYTICAL INSIGHT**: Only connect metrics if it directly answers the user's query or provides a significant warning.
 14. **CONTEXT**: Mention if values are above/below normal baselines
+15. **NO RELABELING**: Each row maps to the listed Columns in order. Use only those column names and values. Never rename a column or invent fields. For example, never report "Temperature" or "Heart Rate"; the only available fields are resident name, id, age, flat_no, medical history, prescribed intake, bp_systolic, bp_diastolic, sugar_level, steps_count, sleep_duration_minutes, sleep_quality_score, and device signal/uptime/cpu.
 """
 
 _SYNTHESIS_MAX_TOKENS = 700
+
+
+def _synthesize_answer(query: str, columns: str, result: list) -> str:
+    """LLM summary of SQL rows, with explicit column headers to prevent mislabeling."""
+    return ask_llm(
+        f"User Query: {query}\n"
+        f"Columns (in order): {columns}\n"
+        f"Retrieved Database Data (each row matches the columns above): {result}\n"
+        "Professional Summary:",
+        system_prompt=_SYNTHESIS_SYSTEM_PROMPT,
+        num_predict=_SYNTHESIS_MAX_TOKENS,
+    )
 _HEALTH_EVALUATION_DAYS = 20
 
 _RESIDENT_PROFILE_RULES = [
@@ -680,6 +694,7 @@ _RESIDENT_NAME_STOPWORDS = {
     "were", "the", "a", "an", "has", "have", "with",
     "and", "or",
     "list", "show", "display", "give", "get", "tell", "on", "takes", "taking",
+    "me", "my", "find", "see", "check",
     "above", "below", "over", "under", "less", "more", "greater", "fewer",
     "medical", "history", "medication", "prescribed", "details", "room",
     "rooms", "flat", "flats", "age", "ages",
@@ -1057,7 +1072,11 @@ def _extract_resident_name(query: str) -> str | None:
         match = re.search(pattern, q)
         if match:
             candidate = match.group(1).strip(" .,?!")
-            candidate = re.sub(r"^(?:what|who|is|the|of|for|about|resident|patient)\s+", "", candidate).strip()
+            candidate = re.sub(
+                r"^(?:(?:what|who|is|the|of|for|about|resident|patient|me|my|give|show|tell|get|display|find|list|see|check)\s+)+",
+                "",
+                candidate,
+            ).strip()
             candidate = re.sub(
                 r"\s+(?:medical|health|treatment|plan|flat|number|no|room|age|history|intake|prescribed|medication|in|have|has|stay|staying|live|living|assigned)$",
                 "",
@@ -1389,9 +1408,20 @@ def _run_multi_resident_profile(query: str, community_id: int) -> dict | None:
 
 def _detect_resident_metric_from_query(query: str) -> str | None:
     q_lower = query.lower()
-    for metric, terms in _NAMED_RESIDENT_METRIC_TERMS:
-        if any(term in q_lower for term in terms):
-            return metric
+    matched = [
+        metric
+        for metric, terms in _NAMED_RESIDENT_METRIC_TERMS
+        if any(term in q_lower for term in terms)
+    ]
+    if "all_metrics" in matched:
+        return "all_metrics"
+    # When two or more distinct metric families are requested (e.g. "bp and
+    # sugar"), show the full health-metrics view so nothing asked-for is dropped.
+    distinct_families = {("sleep" if m.startswith("sleep") else m) for m in matched}
+    if len(distinct_families) >= 2:
+        return "all_metrics"
+    if matched:
+        return matched[0]
     if any(term in q_lower for term in ["compare", "comparison", "versus", " vs "]):
         return "all_metrics"
     return None
@@ -1633,6 +1663,21 @@ def _is_resident_collection_query(q_lower: str) -> bool:
         if any(term in q_lower for term in profile_or_metric_terms):
             return True
     return "listed residents" in q_lower or "community residents" in q_lower
+
+
+_SINGULAR_POSSESSIVE_NAME_RE = re.compile(r"\b([a-z]+(?:\s+[a-z]+){0,2})'s\b")
+_NON_RESIDENT_POSSESSIVE_OWNERS = {
+    "resident", "residents", "patient", "patients", "everyone", "everybody", "their",
+}
+
+
+def _has_singular_possessive_name(q_lower: str) -> bool:
+    """True for a singular possessive like "anil sharma's", not "residents'/everyone's"."""
+    for match in _SINGULAR_POSSESSIVE_NAME_RE.finditer(q_lower):
+        owner = match.group(1).strip()
+        if owner and owner.split()[-1] not in _NON_RESIDENT_POSSESSIVE_OWNERS:
+            return True
+    return False
 
 
 def _has_ranking_request(q_lower: str) -> bool:
@@ -2947,7 +2992,11 @@ def _format_resident_metric_summary_answer(metric: str, result: list[tuple]) -> 
 def _detect_named_resident_metric(query: str) -> str | None:
     q_lower = query.lower().strip()
 
-    if _is_resident_collection_query(q_lower) or _has_ranking_request(q_lower):
+    if _has_ranking_request(q_lower):
+        return None
+    # "give me anil sharma's metrics" names one resident, so it is not a
+    # collection query even though it starts with "give me ... metrics".
+    if _is_resident_collection_query(q_lower) and not _has_singular_possessive_name(q_lower):
         return None
 
     for metric, terms in _NAMED_RESIDENT_METRIC_TERMS:
@@ -4215,7 +4264,107 @@ def _profile_plan_with_bare_possessive_fallback(plan: dict) -> dict | None:
     return fallback_plan
 
 
+class UnsafeSQLError(ValueError):
+    """Raised when a generated SQL plan or statement is not a safe, read-only query."""
+
+
+_ALLOWED_TABLES = set(SCHEMA.keys())
+_ALLOWED_COLUMNS_BY_TABLE = {
+    table_name: set(meta["columns"]) for table_name, meta in SCHEMA.items()
+}
+_ALL_COLUMN_NAMES = {
+    column_name
+    for columns in _ALLOWED_COLUMNS_BY_TABLE.values()
+    for column_name in columns
+}
+_ALLOWED_FILTER_OPERATORS = {"=", "!=", "<>", "<", "<=", ">", ">=", "LIKE", "ILIKE"}
+_FORBIDDEN_SQL_RE = re.compile(
+    r"\b(?:INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|REPLACE|MERGE|CALL|"
+    r"EXEC|EXECUTE|GRANT|REVOKE|ATTACH|DETACH|PRAGMA|COPY|VACUUM|INTO|"
+    r"COMMIT|ROLLBACK|SAVEPOINT)\b",
+    re.IGNORECASE,
+)
+_SELECT_ONLY_RE = re.compile(r"^\s*SELECT\b", re.IGNORECASE)
+
+
+def _ensure_filters_list(raw_filters) -> list:
+    """Normalize a plan's filters into a list (a lone filter dict becomes [dict])."""
+    if isinstance(raw_filters, dict):
+        return [raw_filters]
+    if isinstance(raw_filters, list):
+        return raw_filters
+    return []
+
+
+def _reject_unsafe_sql(reason: str) -> None:
+    """Log the technical reason for developers and raise a safe-to-bubble error."""
+    logger.warning(f"Rejected unsafe SQL: {reason}")
+    raise UnsafeSQLError(reason)
+
+
+def _is_allowed_identifier(token: str) -> bool:
+    """True only for a known schema column, optionally table-qualified."""
+    token = token.strip()
+    if not token:
+        return False
+    if "." in token:
+        table_part, _, column_part = token.partition(".")
+        table_part = table_part.strip()
+        return (
+            table_part in _ALLOWED_TABLES
+            and column_part.strip() in _ALLOWED_COLUMNS_BY_TABLE.get(table_part, set())
+        )
+    return token in _ALL_COLUMN_NAMES
+
+
+def _validate_plan_identifiers(plan: dict) -> None:
+    """Reject any table/column/order_by/operator not in the schema allowlist.
+
+    Values are always bound as query parameters, so only identifiers are checked
+    here. This is the structural half of the read-only guarantee; the built SQL
+    string is checked again by _validate_read_only_sql.
+    """
+    table_name = str(plan.get("table", "residents")).strip()
+    if table_name not in _ALLOWED_TABLES:
+        _reject_unsafe_sql(f"disallowed table in plan: {table_name!r}")
+
+    for part in str(plan.get("column", "residents.name")).split(","):
+        if not _is_allowed_identifier(part):
+            _reject_unsafe_sql(f"disallowed column in plan: {part.strip()!r}")
+
+    order_by = plan.get("order_by")
+    if order_by and not _is_allowed_identifier(str(order_by)):
+        _reject_unsafe_sql(f"disallowed order_by in plan: {order_by!r}")
+
+    for item in _ensure_filters_list(plan.get("filters", [])):
+        if not isinstance(item, dict):
+            continue
+        column = item.get("column")
+        if column is not None and not _is_allowed_identifier(str(column)):
+            _reject_unsafe_sql(f"disallowed filter column in plan: {column!r}")
+        operator = str(item.get("operator", "=")).strip().upper()
+        if operator not in _ALLOWED_FILTER_OPERATORS:
+            _reject_unsafe_sql(f"disallowed filter operator in plan: {operator!r}")
+
+
+def _validate_read_only_sql(sql: str) -> None:
+    """Defense-in-depth: ensure the built statement is a single read-only SELECT."""
+    statement = sql.strip().rstrip(";").strip()
+    if ";" in statement:
+        _reject_unsafe_sql("multiple SQL statements are not allowed")
+    if "--" in statement or "/*" in statement:
+        _reject_unsafe_sql("SQL comments are not allowed")
+    if not _SELECT_ONLY_RE.match(statement):
+        _reject_unsafe_sql("only SELECT statements are allowed")
+    if _FORBIDDEN_SQL_RE.search(statement):
+        _reject_unsafe_sql("disallowed SQL keyword detected")
+
+
 def build_sql(plan: dict, community_id: int) -> tuple[str, list]:
+    # Read-only safety: validate the plan's identifiers against the schema
+    # allowlist before constructing any SQL string.
+    _validate_plan_identifiers(plan)
+
     table = plan.get("table", "residents")
     column = plan.get("column", "residents.name")
     order_by = plan.get("order_by")
@@ -4235,13 +4384,9 @@ def build_sql(plan: dict, community_id: int) -> tuple[str, list]:
     # Community isolation is forced here instead of being delegated to the LLM.
     table_name = str(table).strip()
     from_clause = table_name
-    # DEFENSIVE: Only attempt .get() if f is actually a dictionary
-    filters_list = plan.get("filters", [])
-    if not isinstance(filters_list, list):
-        filters_list = []
-        
+    filters_list = _ensure_filters_list(plan.get("filters", []))
     has_resident_filter = any(
-        isinstance(f, dict) and "residents." in str(f.get("column", "")) 
+        isinstance(f, dict) and "residents." in str(f.get("column", ""))
         for f in filters_list
     )
     
@@ -4255,15 +4400,8 @@ def build_sql(plan: dict, community_id: int) -> tuple[str, list]:
     
     conditions = []
     params = []
-    
-    # DEFENSIVE: Ensure filters is actually a list of dictionaries
-    raw_filters = plan.get("filters", [])
-    if isinstance(raw_filters, dict):
-        raw_filters = [raw_filters]
-    if not isinstance(raw_filters, list):
-        raw_filters = []
-        
-    for f in raw_filters:
+
+    for f in filters_list:
         if not isinstance(f, dict):
             continue
             
@@ -4308,7 +4446,10 @@ def build_sql(plan: dict, community_id: int) -> tuple[str, list]:
     sql += f" LIMIT {limit}"
     if offset:
         sql += f" OFFSET {offset}"
-    
+
+    # Defense-in-depth: confirm the assembled statement is a single read-only SELECT.
+    _validate_read_only_sql(sql)
+
     return sql, params
 
 def clean_json(json_str: str) -> str:
@@ -4477,11 +4618,7 @@ def handle_sql(query: str, community_id: int) -> dict:
             answer = _format_resident_profile_answer(
                 direct_profile_plan["_profile_field"],
                 result,
-            ) or ask_llm(
-                f"User Query: {query}\nRetrieved Database Data: {result}\nProfessional Summary:",
-                system_prompt=_SYNTHESIS_SYSTEM_PROMPT,
-                num_predict=_SYNTHESIS_MAX_TOKENS,
-            )
+            ) or _synthesize_answer(query, direct_profile_plan.get("column", ""), result)
 
             return {
                 "query": query,
@@ -4520,10 +4657,8 @@ def handle_sql(query: str, community_id: int) -> dict:
                     "answer": _format_empty_metric_ranking_answer(direct_metric_plan),
                 }
 
-            answer = _format_metric_ranking_answer(query, direct_metric_plan, result) or ask_llm(
-                f"User Query: {query}\nRetrieved Database Data: {result}\nProfessional Summary:",
-                system_prompt=_SYNTHESIS_SYSTEM_PROMPT,
-                num_predict=_SYNTHESIS_MAX_TOKENS,
+            answer = _format_metric_ranking_answer(query, direct_metric_plan, result) or _synthesize_answer(
+                query, direct_metric_plan.get("column", ""), result
             )
 
             return {
@@ -4593,11 +4728,7 @@ def handle_sql(query: str, community_id: int) -> dict:
                 "answer": f"I couldn't find any clinical records matching '{query}' in the database."
             }
 
-        answer = ask_llm(
-            f"User Query: {query}\nRetrieved Database Data: {result}\nProfessional Summary:",
-            system_prompt=_SYNTHESIS_SYSTEM_PROMPT,
-            num_predict=_SYNTHESIS_MAX_TOKENS,
-        )
+        answer = _synthesize_answer(query, plan.get("column", ""), result)
         
         # CHART GENERATOR OVERRIDE
         chart_payload = None
@@ -4664,5 +4795,7 @@ def handle_sql(query: str, community_id: int) -> dict:
             "chart_data": chart_payload
         }
     except Exception as e:
+        # Log the technical detail for developers; never return it to the user.
         logger.error(f"SQL Pipeline error: {e}")
-        return {"error": str(e), "answer": "I encountered a technical error while analyzing that request."}
+        safe_message = "I encountered a technical error while analyzing that request. Please try again."
+        return {"error": safe_message, "answer": safe_message}

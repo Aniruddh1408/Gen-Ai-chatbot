@@ -12,6 +12,11 @@ from app.core.community import (
     get_memory_session_id,
     invalid_community_error,
 )
+from app.core.config import (
+    CORS_ALLOW_CREDENTIALS,
+    CORS_ALLOW_ORIGINS,
+    ENABLE_DEBUG_ENDPOINTS,
+)
 from app.graph.workflow import run_chat_graph
 
 
@@ -23,8 +28,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=CORS_ALLOW_ORIGINS,
+    allow_credentials=CORS_ALLOW_CREDENTIALS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -98,10 +103,11 @@ def clear_session_history(session_id: str, community_id: int):
     }
 
 
-@app.get("/debug/guardrail")
-def debug_guardrail(query: str):
-    """Debug endpoint - test guardrail in isolation inside the live server."""
-    from app.agents.guardrails import input_guardrail
+if ENABLE_DEBUG_ENDPOINTS:
+    @app.get("/debug/guardrail")
+    def debug_guardrail(query: str):
+        """Debug endpoint - test guardrail in isolation. Disabled unless ENABLE_DEBUG_ENDPOINTS is set."""
+        from app.agents.guardrails import input_guardrail
 
-    result = input_guardrail(query)
-    return {"query": query, "allowed": result}
+        result = input_guardrail(query)
+        return {"query": query, "allowed": result}

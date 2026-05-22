@@ -38,6 +38,23 @@ _COMPOUND_METRIC_CONCEPT_RE = re.compile(
 )
 _MAX_SUB_QUERIES = 4
 
+# Response fields safe to return to the client. Anything not listed here
+# (sql, plan, result, retrieved_context, sub_responses, ...) is stripped in
+# finalize_node so backend/implementation details never leak to users.
+_CLIENT_SAFE_RESPONSE_KEYS = {
+    "answer",
+    "error",
+    "chart_data",
+    "query",
+    "sub_queries",
+    "blocked_queries",
+    "trace_id",
+    "latency_ms",
+    "community_id",
+    "community_name",
+    "rewritten_query",
+}
+
 _SIMPLE_REPHRASE_TERMS = [
     "explain simply",
     "explain it simply",
@@ -281,6 +298,15 @@ def load_context_node(state: ChatGraphState) -> ChatGraphState:
             "response": {
                 "error": invalid_community_error(),
                 "trace_id": state["trace_id"],
+            },
+            "should_save_memory": False,
+        }
+
+    if not state["query"].strip():
+        return {
+            "community_name": community_name,
+            "response": {
+                "answer": "Please enter a question and I'll do my best to help.",
             },
             "should_save_memory": False,
         }
@@ -545,7 +571,8 @@ def save_memory_node(state: ChatGraphState) -> ChatGraphState:
 
 
 def finalize_node(state: ChatGraphState) -> ChatGraphState:
-    response = dict(state.get("response") or {})
+    raw_response = state.get("response") or {}
+    response = {key: value for key, value in raw_response.items() if key in _CLIENT_SAFE_RESPONSE_KEYS}
 
     latency_ms = (time.time() - state["start_time"]) * 1000
 

@@ -50,3 +50,23 @@ EMBED_MODEL = os.getenv("EMBED_MODEL", "mxbai-embed-large")
 # --- Connection pool ---
 DB_POOL_MIN = int(os.getenv("DB_POOL_MIN", "1"))
 DB_POOL_MAX = int(os.getenv("DB_POOL_MAX", "10"))
+
+
+# --- API / CORS ---
+def _parse_cors_origins(raw: str | None) -> list[str]:
+    """Parse a comma-separated CORS_ALLOW_ORIGINS value; default to wildcard."""
+    if not raw:
+        return ["*"]
+    origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    return origins or ["*"]
+
+
+def _parse_bool(raw: str | None) -> bool:
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+CORS_ALLOW_ORIGINS = _parse_cors_origins(os.getenv("CORS_ALLOW_ORIGINS"))
+# Per the CORS spec, credentials cannot be combined with a wildcard origin.
+CORS_ALLOW_CREDENTIALS = "*" not in CORS_ALLOW_ORIGINS
+# Debug/introspection endpoints are off unless explicitly enabled.
+ENABLE_DEBUG_ENDPOINTS = _parse_bool(os.getenv("ENABLE_DEBUG_ENDPOINTS"))

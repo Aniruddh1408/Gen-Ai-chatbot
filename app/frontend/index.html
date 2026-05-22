@@ -1138,8 +1138,15 @@
                 }
 
                 if (isNumberedList) {
-                    const items = lines.map((line) => line.replace(/^\d+\.\s/, "").trim());
-                    return `<ol>${items.map((item) => `<li>${item.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")}</li>`).join("")}</ol>`;
+                    // Preserve each item's source number via <li value> so lists
+                    // split across blank-line blocks don't all restart at "1.".
+                    const items = lines.map((line) => {
+                        const match = line.trim().match(/^(\d+)\.\s(.*)$/);
+                        const num = match ? match[1] : "";
+                        const body = (match ? match[2] : line).trim().replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+                        return `<li value="${num}">${body}</li>`;
+                    });
+                    return `<ol>${items.join("")}</ol>`;
                 }
 
                 return `<p>${block.replace(/\n/g, "<br>").replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")}</p>`;

@@ -459,6 +459,11 @@ def _looks_like_kubocare_product_documentation_query(query: str) -> bool:
     if mentions_product_device and any(term in q for term in ["wearable", "camera", "radar", "frequency", "fall detection"]):
         return True
 
+    # "wearable"/"camera" questions concern KuboCare's sensing model regardless
+    # of whether the device is named explicitly.
+    if any(_contains_term(q, term) for term in ["wearable", "wearables", "non-wearable", "cameras"]):
+        return True
+
     return False
 
 
@@ -508,7 +513,12 @@ def _has_named_metric_hint(query: str) -> bool:
     named_match = re.search(rf"\b(?:for|of)\s+([a-z]+)\s+{metric_word}\b", q)
     if named_match and is_name_fragment(named_match.group(1)):
         return True
-    named_match = re.search(rf"\b{metric_word}\s+(?:for|of)\s+([a-z]+(?:\s+[a-z]+){{0,2}})\b", q)
+    # Allow an optional unit word so "sugar levels of John", "sleep score of Mary",
+    # and "step count of Ravi" are recognized as named-resident metric requests.
+    metric_unit_suffix = r"(?:\s+(?:level|levels|score|scores|count|counts|duration|reading|readings))?"
+    named_match = re.search(
+        rf"\b{metric_word}{metric_unit_suffix}\s+(?:for|of)\s+([a-z]+(?:\s+[a-z]+){{0,2}})\b", q
+    )
     if named_match:
         return True
     return False
@@ -554,7 +564,7 @@ def _looks_like_care_guidance_query(query: str) -> bool:
         "care score", "priority score", "score in high priority", "high priority",
         "moderate priority", "routine priority", "care priority",
     ]
-    has_score_number = re.search(r"\bscore\s+\d+\b", q) is not None
+    has_score_number = re.search(r"\bscore\s+(?:of\s+|is\s+|=\s*)?\d+\b", q) is not None
     has_care_term = any(term in q for term in care_terms) or has_score_number
     if not has_care_term:
         return False
@@ -584,7 +594,7 @@ def _care_guidance_answer(query: str) -> str | None:
         "- Routine priority: score 0-4",
     ]
 
-    score_match = re.search(r"\bscore\s+(\d+)\b", q)
+    score_match = re.search(r"\bscore\s+(?:of\s+|is\s+|=\s*)?(\d+)\b", q)
     if score_match:
         score = int(score_match.group(1))
         if score >= 9:
@@ -686,6 +696,26 @@ def classify_intent(query: str) -> str:
     return "CHAT"
 
 
+# Answer prefixes the RAG retriever uses when it cannot ground an answer.
+_RAG_NEGATIVE_PREFIXES = (
+    "I couldn't find that in the documentation",
+    "I couldn't access",
+)
+
+
+def _sql_found_nothing(res: dict) -> bool:
+    """True when a SQL response carries an error or an empty result set."""
+    if "error" in res:
+        return True
+    return "result" in res and not res["result"]
+
+
+def _rag_has_grounded_answer(res: dict) -> bool:
+    """True when RAG produced a real answer rather than a not-found message."""
+    answer = (res.get("answer") or "").strip()
+    return bool(answer) and not answer.startswith(_RAG_NEGATIVE_PREFIXES)
+
+
 def route_query(
     query: str,
     original_query: str | None = None,
@@ -728,24 +758,41 @@ def route_query(
             answer = ask_llm(
                 chat_input,
                 system_prompt=_GENERAL_CHAT_PROMPT,
-                num_predict=220,
+                # Headroom so multi-point explanations/recommendations are not cut off.
+                num_predict=512,
                 temperature=LLM_CHAT_TEMPERATURE,
             )
             return {"query": query, "answer": answer}
         except Exception as e:
             logger.error(f"Chat response failed: {e}")
+            safe_message = "The assistant is taking too long to respond. Please try again shortly."
             return {
                 "query": query,
-                "error": str(e),
-                "answer": "The language model is taking too long to respond. Please try again shortly.",
+                "error": safe_message,
+                "answer": safe_message,
             }
 
     if intent == "SQL":
         logger.info("Routing to SQL...")
         res = handle_sql(query, community_id=community_id)
+        # Hybrid fallback: if structured data has nothing, try documentation,
+        # but only use it when it can actually answer the question.
+        if _sql_found_nothing(res):
+            doc_fallback = handle_rag(query)
+            if _rag_has_grounded_answer(doc_fallback):
+                logger.info("SQL had no data; answered from documentation fallback.")
+                return doc_fallback
         if "error" in res and not any(_contains_term(query.lower(), word) for word in ["iot", "signal", "uptime"]):
             res["answer"] = "I couldn't find matches in the database. Please check the name or ID."
         return res
 
     logger.info("Routing to RAG...")
-    return handle_rag(query)
+    res = handle_rag(query)
+    # Hybrid fallback: if documentation cannot answer a clearly structured
+    # question, try SQL and use it only when it returns data.
+    if not _rag_has_grounded_answer(res) and _looks_like_clear_sql_query(query):
+        sql_fallback = handle_sql(query, community_id=community_id)
+        if not _sql_found_nothing(sql_fallback):
+            logger.info("Documentation had no answer; answered from SQL fallback.")
+            return sql_fallback
+    return res
