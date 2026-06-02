@@ -7,6 +7,10 @@ class ChatGraphState(TypedDict, total=False):
     community_id: int
     community_name: str
     memory_session_id: str
+    # Optional caller identity. When set, the memory_session_id includes it
+    # so two users on the same (community, session_id) get separate history.
+    # See get_memory_session_id in app/core/community.py.
+    user_id: int
 
     trace_id: str
     start_time: float

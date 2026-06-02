@@ -13,7 +13,7 @@ from app.core.config import (
     LLM_MODEL,
     LLM_TIMEOUT_SECONDS,
 )
-from app.schema.schema import SCHEMA, schema_to_text
+from app.schema.kubocare_schema import SCHEMA, schema_to_text
 
 # Shared LLM instance for lightweight calls such as intent classification.
 llm = ChatOpenAI(
@@ -26,98 +26,69 @@ llm = ChatOpenAI(
 )
 
 
+# Tables the deterministic SQL builder (build_sql) knows how to community-scope.
+# The LLM planner is restricted to these so a generated plan can never run
+# unscoped (build_sql now fails closed on any other table). resident_profile is
+# the canonical residents table; the other three carry a resident_id FK that
+# build_sql auto-joins into the room→community chain.
+_PLANNER_SCOPABLE_TABLES = (
+    "resident_profile", "activity_log", "insights", "notifications",
+)
+
+
 def get_system_prompt():
     """Default SQL planner system prompt with live date injection."""
     now = datetime.datetime.now()
     current_date = now.strftime("%Y-%m-%d")
-    schema_text = schema_to_text(SCHEMA)
-
-    return f"""
-You are an expert SQL Planner for a healthcare and IoT system.
-Your mission is to convert the User Query into a valid JSON SQL Plan.
-
-TODAY IS: {current_date}
-
-SCHEMA:
-{schema_text}
-
-JSON FORMAT RULES:
-1. table: Must be one of the schema tables.
-2. column: ALWAYS select "residents.name" along with the metric you need (e.g., "residents.name, steps_count"). Never use "*".
-3. filters: List of column, operator, value. NEVER create time or date filters (assume all DB data is recent).
-4. order_by: Column name if user asks for highest, lowest, best, worst.
-5. Never create community_id filters. The backend applies community scope automatically.
-
-EXAMPLE 1 (Chart or Analytics):
-Query: Make a chart of the sleep quality scores.
-Result:
-{{
-  "table": "sleep_analytics",
-  "column": "residents.name, sleep_quality_score",
-  "limit": 10,
-  "filters": []
-}}
-
-EXAMPLE 2 (Analytic):
-Query: Who has the lowest sleep quality score?
-Result:
-{{
-  "table": "sleep_analytics",
-  "column": "residents.name, sleep_quality_score",
-  "order_by": "sleep_quality_score",
-  "order_direction": "ASC",
-  "limit": 1,
-  "filters": []
-}}
-
-RULE: For "lowest", "fewest", "least", "less", use ORDER_DIRECTION: "ASC" with LIMIT 1.
-RULE: For "highest", "most", "best", "top", use ORDER_DIRECTION: "DESC" with LIMIT 1.
-"""
+    return _planner_prompt(current_date=current_date)
 
 
 def get_sql_planner_prompt() -> str:
     """Short, strict planner prompt optimized for smaller local models."""
-    schema_text = schema_to_text(SCHEMA)
+    return _planner_prompt()
 
-    return """
-Return exactly one JSON object.
-Do not use markdown.
-Do not explain anything.
-Do not return empty output.
 
-Allowed tables:
-- residents
-- health_reports
-- activity_metrics
-- sleep_analytics
-- device_status
+def _planner_prompt(current_date: str | None = None) -> str:
+    """Strict JSON SQL planner prompt, grounded in the *current* schema.
 
-Relationships:
-- residents.id = health_reports.resident_id
-- residents.id = activity_metrics.resident_id
-- residents.id = sleep_analytics.resident_id
+    Restricts the planner to tables build_sql can community-scope and forbids
+    inventing tables/columns. Anything outside this allowlist is rejected by the
+    safety validator, so the prompt keeps the model inside the safe set.
+    """
+    schema_text = schema_to_text(SCHEMA, only=_PLANNER_SCOPABLE_TABLES)
+    date_line = f"TODAY IS: {current_date}\n\n" if current_date else ""
+    allowed = "\n".join(f"- {t}" for t in _PLANNER_SCOPABLE_TABLES)
 
-Rules:
-- For resident metric queries, include residents.name in column.
-- Never use '*'.
-- filters must be a list of objects like {"column":"residents.name","operator":"=","value":"Ravi Kumar"}.
-- Never include community_id in filters. The backend applies community scope automatically.
-- If user asks for lowest/least/fewest, use order_direction ASC and limit 1.
-- If user asks for highest/most/best, use order_direction DESC and limit 1.
-- If no filters are needed, return "filters": [].
+    return f"""You convert a user request into exactly one JSON SQL plan.
+{date_line}Return exactly one JSON object. No markdown, no prose, no explanation.
+
+You may ONLY use these tables:
+{allowed}
+
+Strict rules:
+1. "table" MUST be exactly one of the allowed tables above. Never invent a table.
+2. "column" MUST list real columns from the schema below, qualified as table.column,
+   and MUST include resident_profile.name first for any resident-facing answer.
+   Never use "*". Never invent a column.
+3. "filters" is a list of objects: {{"column": "table.column", "operator": "=", "value": "..."}}.
+   - For a resident name, use {{"column": "resident_profile.name", "operator": "=", "value": "<full name>"}}.
+     Use the resident's full name when you know it, not a partial fragment.
+   - Never add a community_id, date, or time filter. The backend applies community scope automatically.
+4. "limit" is REQUIRED. Use 1 for a single resident or a top/bottom ranking; use a small number (<=50) otherwise.
+5. order_by/order_direction: for lowest/least/fewest use order_direction "ASC"; for highest/most/best use "DESC".
+6. If the request cannot be answered from the allowed tables, return a minimal valid plan that yields no rows:
+   {{"table": "resident_profile", "column": "resident_profile.name", "filters": [], "limit": 1}}
 
 Valid JSON shape:
-{
-  "table": "sleep_analytics",
-  "column": "residents.name, sleep_quality_score",
-  "filters": [],
-  "order_by": "sleep_quality_score",
-  "order_direction": "ASC",
+{{
+  "table": "resident_profile",
+  "column": "resident_profile.name, resident_profile.flat_number",
+  "filters": [{{"column": "resident_profile.name", "operator": "=", "value": "Ravi Kumar"}}],
   "limit": 1
-}
+}}
 
-Schema:
-""" + schema_text
+Schema (only these tables are allowed):
+{schema_text}"""
 
 
 def ask_sql_planner(query: str) -> str:

@@ -343,7 +343,9 @@ def load_context_node(state: ChatGraphState) -> ChatGraphState:
             "should_save_memory": False,
         }
 
-    memory_session_id = get_memory_session_id(state["session_id"], community_id)
+    memory_session_id = get_memory_session_id(
+        state["session_id"], community_id, state.get("user_id"),
+    )
     chat_history = get_history(memory_session_id)
 
     logger.info(
@@ -384,12 +386,38 @@ def current_community_node(state: ChatGraphState) -> ChatGraphState:
     }
 
 
+def _session_has_attachments(memory_session_id: str | None) -> bool:
+    if not memory_session_id:
+        return False
+    try:
+        from app.agents.attachments import get_attachments
+        return bool(get_attachments(memory_session_id))
+    except Exception as exc:
+        logger.error(f"Attachment lookup failed: {exc}")
+        return False
+
+
+def _query_targets_attachment_summary(query: str) -> bool:
+    try:
+        from app.retrievers.vector_retriever import is_attachment_summary_request
+        return is_attachment_summary_request(query)
+    except Exception as exc:
+        logger.error(f"Attachment summary detection failed: {exc}")
+        return False
+
+
 def transform_previous_answer_node(state: ChatGraphState) -> ChatGraphState:
     if _has_response(state):
         return {}
 
     style = _detect_transform_style(state["query"])
     if not style:
+        return {}
+
+    if (
+        _query_targets_attachment_summary(state["query"])
+        and _session_has_attachments(state.get("memory_session_id"))
+    ):
         return {}
 
     if style == "detail":
@@ -553,6 +581,7 @@ def route_node(state: ChatGraphState) -> ChatGraphState:
         return {}
 
     routing_queries = _queries_for_routing(state)
+    user_id = state.get("user_id")
 
     try:
         if len(routing_queries) > 1:
@@ -562,6 +591,7 @@ def route_node(state: ChatGraphState) -> ChatGraphState:
                     original_query=sub_query,
                     chat_history=state.get("chat_history", []),
                     community_id=state["community_id"],
+                    user_id=user_id,
                 )
                 for sub_query in routing_queries
             ]
@@ -581,6 +611,7 @@ def route_node(state: ChatGraphState) -> ChatGraphState:
             original_query=state["query"],
             chat_history=state.get("chat_history", []),
             community_id=state["community_id"],
+            user_id=user_id,
         )
     except Exception as exc:
         logger.exception(
@@ -745,7 +776,12 @@ def build_chat_graph():
 chat_graph = build_chat_graph()
 
 
-def run_chat_graph(query: str, session_id: str, community_id: int) -> dict:
+def run_chat_graph(
+    query: str,
+    session_id: str,
+    community_id: int,
+    user_id: int | None = None,
+) -> dict:
     initial_state: ChatGraphState = {
         "query": query,
         "session_id": session_id,
@@ -754,6 +790,10 @@ def run_chat_graph(query: str, session_id: str, community_id: int) -> dict:
         "start_time": time.time(),
         "should_save_memory": False,
     }
+    # Only set user_id when supplied — TypedDict(total=False) treats absence
+    # as "key not present", which is what get_memory_session_id checks.
+    if user_id is not None:
+        initial_state["user_id"] = user_id
 
     final_state = chat_graph.invoke(initial_state)
     return final_state["response"]
