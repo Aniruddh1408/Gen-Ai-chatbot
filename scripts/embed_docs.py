@@ -1,3 +1,9 @@
+# ===========================================================================
+# This is a helper script you run by hand, not part of the live app. It reads
+# the documents in data/docs/, splits them into chunks, turns each chunk into a
+# search-vector, and loads them into the database so the assistant can search
+# them later. Re-run it whenever those documents change.
+# ===========================================================================
 import argparse
 import hashlib
 import json
