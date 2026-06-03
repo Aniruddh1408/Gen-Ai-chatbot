@@ -1,3 +1,9 @@
+# ===========================================================================
+# This file manages the connection to the database. It keeps a small pool of
+# reusable connections (created only when first needed) and offers one safe
+# helper for running read queries. If the database is down or a query fails, it
+# cleans up and raises a clear error for the caller to handle gracefully.
+# ===========================================================================
 """
 Database connection layer.
 Provides a psycopg2 connection pool and a safe run_query() helper.

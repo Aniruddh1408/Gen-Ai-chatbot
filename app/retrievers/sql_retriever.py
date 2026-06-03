@@ -1,3 +1,10 @@
+# ===========================================================================
+# This file answers data questions by talking to the database. It turns a plain
+# question ("how old is Anil?") into a safe, read-only database query, runs it,
+# and writes the results back as a natural, friendly sentence — never showing
+# the raw query or made-up numbers. It leans on the small tools in the _sql/
+# folder to do this safely.
+# ===========================================================================
 """
 SQL Retriever — Text-to-SQL pipeline with English synthesis.
 """

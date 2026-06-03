@@ -1,3 +1,9 @@
+# ===========================================================================
+# This file sets up logging for the whole app. It writes each log line as a
+# structured JSON record (time, level, which module, message, plus extras like a
+# request's trace id and how long it took), which makes the logs easy to search
+# and monitor in production.
+# ===========================================================================
 import logging
 import json
 from datetime import datetime

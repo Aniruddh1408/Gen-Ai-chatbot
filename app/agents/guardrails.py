@@ -1,3 +1,10 @@
+# ===========================================================================
+# This file is the front-door and back-door safety check for the chatbot. On the
+# way in, it screens the user's message for anything unsafe or out of scope; on
+# the way out, it cleans the reply so it never leaks private data or internal
+# details. It uses simple, predictable word and pattern rules so its behaviour
+# is reliable.
+# ===========================================================================
 """
 Guardrails - input validation and output sanitization.
 Uses deterministic keyword and regex rules instead of an LLM for reliability.

@@ -1,3 +1,10 @@
+# ===========================================================================
+# This file is the traffic controller. For every question it decides how to
+# answer: chat normally for small talk, look in the database for data questions
+# ("how old is Anil?"), or search the documents for how-to and policy questions.
+# When a question needs more than one of those, it combines them. It's the
+# top-level decision-maker that hands work to the right specialist.
+# ===========================================================================
 """
 Router Agent - Unified intent dispatch and multi-retriever logic.
 """

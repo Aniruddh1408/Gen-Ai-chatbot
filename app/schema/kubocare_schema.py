@@ -1,3 +1,9 @@
+# ===========================================================================
+# This file is the master map of the database — every table and column the app
+# knows about. Other parts use it to check that a query only touches real,
+# approved tables, to tell the AI what data exists, and to know which columns
+# hold private information. Update it here whenever the real database changes.
+# ===========================================================================
 """Kubocare production schema — single source of truth.
 
 Mirrors `data/schema.sql` (~40 tables, 13 enums). Used by:

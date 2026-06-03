@@ -1,3 +1,10 @@
+# ===========================================================================
+# This file answers "how do I…" and policy/guide questions from the written
+# documents (manuals, care guides, troubleshooting). It finds the passages most
+# related to the question by meaning, not just keywords, keeps only the relevant
+# ones, and uses them to write a grounded answer. If nothing relevant is found,
+# it says so instead of guessing.
+# ===========================================================================
 """
 Vector (RAG) Retriever - Semantic search via pgvector + LangChain answer chain.
 """

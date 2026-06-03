@@ -1,3 +1,9 @@
+# ===========================================================================
+# This file remembers the documents a user uploads during a chat. It stores the
+# extracted text and its search-vectors tied to that one conversation, saved to
+# disk so they survive a restart and stay private to that chat. Other chats
+# can't see them, and nothing here is added to the shared knowledge base.
+# ===========================================================================
 """Per-session attachment store for uploaded documents.
 
 Holds the extracted text + embeddings of files a user uploads in a chat, scoped

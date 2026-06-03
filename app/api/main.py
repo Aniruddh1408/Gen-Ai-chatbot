@@ -1,3 +1,10 @@
+# ===========================================================================
+# This file is the web server — the public entrance to the chatbot. It defines
+# the web addresses the app and other programs call: send a chat message, upload
+# a file, fetch or clear a conversation's history, and a health check. Each
+# incoming request is run through the safety checks and answer pipeline, then a
+# clean reply is sent back. It also serves the chat web page itself.
+# ===========================================================================
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, File, Form, UploadFile
 from pydantic import BaseModel

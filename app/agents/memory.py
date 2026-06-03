@@ -1,3 +1,9 @@
+# ===========================================================================
+# This file is the assistant's short-term memory. It saves and recalls the
+# back-and-forth of each conversation (kept in Redis, with an on-disk backup) so
+# the assistant can make sense of follow-up questions like "what about her?".
+# Each community and user gets its own separate history.
+# ===========================================================================
 """
 Memory Agent — Persistent Session Core using Redis.
 Provides high-performance, distributed session history for the AI assistant.

@@ -1,3 +1,10 @@
+# ===========================================================================
+# This file helps the assistant understand free-form health questions. It uses
+# one AI call to read a question like "did Anil sleep worse last week?" and turn
+# it into a tidy checklist (which resident, which metric, which dates). That
+# checklist then drives the safe, fixed database queries. If anything goes
+# wrong, it quietly gives up so the simpler keyword matching can take over.
+# ===========================================================================
 """LLM-backed intent extraction for resident health-data questions.
 
 The deterministic sensor handlers in ``app/retrievers/_sql/sensors.py`` recognise

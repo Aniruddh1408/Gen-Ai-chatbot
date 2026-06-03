@@ -1,3 +1,10 @@
+# ===========================================================================
+# This file is the assembly line for answering a chat message. It connects the
+# steps in order — safety check, recall conversation history, route to the right
+# answer source, then clean and finalize the reply — and runs each message
+# through them from start to finish. It's the conductor that ties the other
+# pieces together.
+# ===========================================================================
 import time
 import uuid
 import re

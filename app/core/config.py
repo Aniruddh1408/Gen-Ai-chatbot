@@ -1,3 +1,9 @@
+# ===========================================================================
+# This file is the single place all settings live. It reads values from the
+# environment (database address, AI server URLs, limits, feature switches) and
+# hands them to the rest of the app, with sensible defaults. Change a setting
+# here or in the environment instead of hunting through the code.
+# ===========================================================================
 """
 Centralized configuration for the GenAI IoT Assistant.
 All environment-specific settings are managed here.

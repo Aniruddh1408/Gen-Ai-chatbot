@@ -1,3 +1,10 @@
+# ===========================================================================
+# This file is the final fact-check before an answer goes out. It reads the
+# resident names an answer mentions and confirms each one actually lives in the
+# community that was asked about. If the answer names someone who doesn't belong
+# there, we discard it rather than risk telling the user something made-up or
+# about the wrong person.
+# ===========================================================================
 """Roster-grounded answer verification — the structural backstop.
 
 Why this exists

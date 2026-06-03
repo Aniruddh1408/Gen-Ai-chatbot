@@ -1,3 +1,9 @@
+# ===========================================================================
+# This file is the phone line to the AI language model. It sends prompts to the
+# model server and returns the model's reply, with shared settings for timeouts
+# and temperature. Other parts of the app call through here instead of talking
+# to the model directly.
+# ===========================================================================
 """
 LLM client for a vLLM OpenAI-compatible server.
 """

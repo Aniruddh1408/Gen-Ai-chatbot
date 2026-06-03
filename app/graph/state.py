@@ -1,3 +1,9 @@
+# ===========================================================================
+# This file describes the "clipboard" passed from step to step while a chat
+# message is processed. It lists every piece of information a step might read or
+# fill in — the question, who's asking, the running answer, timing, and so on —
+# so all the steps agree on the same shape of data.
+# ===========================================================================
 from typing import Any, TypedDict
 
 

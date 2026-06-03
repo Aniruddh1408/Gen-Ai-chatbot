@@ -1,3 +1,9 @@
+# ===========================================================================
+# This file keeps each care community's data walled off from the others. It
+# holds the list of valid communities, builds the per-community/per-user keys
+# used to store chat history, and checks that whoever is asking is actually
+# allowed to see the community they're asking about — before any data is read.
+# ===========================================================================
 """Community registry, session scoping, and per-user community authorization.
 
 Three responsibilities live here so the request entry point can stay thin:

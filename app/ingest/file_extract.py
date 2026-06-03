@@ -1,3 +1,9 @@
+# ===========================================================================
+# This file pulls plain text out of uploaded documents. The AI can only read
+# text, so this turns PDFs, Word files, spreadsheets, CSVs, and plain/markdown
+# files into clean text it can work with. If a file can't be read, it returns a
+# friendly message instead of crashing.
+# ===========================================================================
 """Extract plain text from uploaded documents.
 
 The deployed LLM is text-only, so every uploaded file must be turned into text
