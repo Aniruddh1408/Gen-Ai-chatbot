@@ -1,3 +1,9 @@
+# ===========================================================================
+# This is the assistant's "cheat sheet" of words and phrases. It holds the
+# lists of words the assistant watches for — like "oldest", "diabetes",
+# "room", "fall" — so it can tell what a question is about. There is no logic
+# here, just lists of words and a few ready-made search rules.
+# ===========================================================================
 """Keyword, regex-pattern, and rule-table constants for sql_retriever.
 
 Pure data only (no DB/LLM). Re-exported through sql_retriever via star import
@@ -172,6 +178,9 @@ _RESIDENT_NAME_STOPWORDS = {
     "bp", "blood", "pressure", "sugar", "glucose", "level", "levels",
     "steps", "step", "sleep", "score", "scores", "quality", "duration",
     "chart", "graph", "pie", "bar", "line",
+    # Device / sensor vocabulary — never a resident name.
+    "device", "devices", "sensor", "sensors", "radar", "id", "ids",
+    "status", "monitor", "monitoring",
 }
 
 

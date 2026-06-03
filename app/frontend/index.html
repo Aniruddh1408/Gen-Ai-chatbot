@@ -1072,12 +1072,21 @@
 
             <button type="button" id="new-chat-btn" class="new-chat-btn">+ New Chat</button>
 
+            <label class="community-control" for="user-select">
+                <span>Login as</span>
+                <select id="user-select" class="community-select">
+                    <option value="">— demo (no login) —</option>
+                </select>
+            </label>
+
             <label class="community-control" for="community-select">
                 <span>Local Community</span>
                 <select id="community-select" class="community-select">
                     <option value="1">Green Valley Care</option>
                     <option value="2">Sunrise Senior Living</option>
                     <option value="3">Lotus Wellness Home</option>
+                    <option value="4">Maple Heights Eldercare</option>
+                    <option value="5">Coastal Haven Senior Home</option>
                 </select>
             </label>
 
@@ -1154,6 +1163,7 @@
         const sendBtn = document.getElementById("send-btn");
         const cancelBtn = document.getElementById("cancel-btn");
         const communitySelect = document.getElementById("community-select");
+        const userSelect = document.getElementById("user-select");
         const newChatBtn = document.getElementById("new-chat-btn");
         const sessionList = document.getElementById("session-list");
         const pasteBtn = document.getElementById("paste-btn");
@@ -1296,7 +1306,9 @@
         const communityNames = {
             1: "Green Valley Care",
             2: "Sunrise Senior Living",
-            3: "Lotus Wellness Home"
+            3: "Lotus Wellness Home",
+            4: "Maple Heights Eldercare",
+            5: "Coastal Haven Senior Home"
         };
 
         function getStoredCommunityId() {
@@ -1306,7 +1318,12 @@
 
         const communityId = getStoredCommunityId();
         localStorage.setItem("kubo_community_id", String(communityId));
-        const sessionStorageKey = `kubo_sessions_${communityId}`;
+        // Namespace per (user, community). "demo" is the no-login bucket.
+        // Without this, switching from Caregiver C1-1 to Caregiver C2-1 would
+        // show C1-1's session list/history because storage was per-community
+        // only.
+        const userStorageKey = localStorage.getItem("kubo_user_id") || "demo";
+        const sessionStorageKey = `kubo_sessions_${userStorageKey}_${communityId}`;
 
         function createSessionId(existingIds = new Set()) {
             const makeId = () => {
@@ -1342,7 +1359,8 @@
         const maxLocalHistoryTurns = 50;
 
         function historyStorageKey(targetSessionId = sessionId) {
-            return `kubo_history_${communityId}_${targetSessionId}`;
+            // Same per-(user, community) namespacing as sessionStorageKey.
+            return `kubo_history_${userStorageKey}_${communityId}_${targetSessionId}`;
         }
 
         function getLocalHistory(targetSessionId = sessionId) {
@@ -1457,9 +1475,19 @@
             renderSessionList();
         }
 
+        // Append &user_id=N when a user is "logged in" so the backend
+        // hits the correct (user, community, session) memory key and the
+        // authorize_community gate runs server-side. With no user picked,
+        // we omit the param and the demo path takes over.
+        function communityScopeQuery() {
+            return currentUserId
+                ? `community_id=${communityId}&user_id=${currentUserId}`
+                : `community_id=${communityId}`;
+        }
+
         async function clearRemoteSession(targetSessionId) {
             try {
-                await fetch(`/history/${encodeURIComponent(targetSessionId)}?community_id=${communityId}`, {
+                await fetch(`/history/${encodeURIComponent(targetSessionId)}?${communityScopeQuery()}`, {
                     method: "DELETE"
                 });
             } catch (_error) {
@@ -1591,6 +1619,155 @@
                 }
             });
         }
+
+        // ----- "Login as" picker -----------------------------------------
+        // Fetches the seeded staff users from /users and groups them by role
+        // in a single <select>. When a user is picked, we restrict the
+        // community dropdown to only that user's mapped communities so the
+        // happy path matches the API's authorize_community gate. The demo
+        // entry ("— demo (no login) —") sends no user_id and the gate falls
+        // back to the allowlist-only check.
+        const allCommunityOptions = communitySelect
+            ? Array.from(communitySelect.options).map(o => ({ value: o.value, text: o.text }))
+            : [];
+        let userDirectory = [];        // populated from /users
+        let currentUserId = localStorage.getItem("kubo_user_id") || "";
+
+        function applyCommunityScope(allowed) {
+            // allowed === null  -> demo path, show every community
+            // allowed === []    -> user with no mappings, lock dropdown
+            // allowed === [..ids..] -> restrict to those ids
+            if (!communitySelect) return;
+            const desired = allowed === null
+                ? allCommunityOptions
+                : allCommunityOptions.filter(o => allowed.includes(Number(o.value)));
+            communitySelect.innerHTML = "";
+            if (desired.length === 0) {
+                const opt = document.createElement("option");
+                opt.value = "";
+                opt.textContent = "No community access";
+                opt.disabled = true;
+                communitySelect.appendChild(opt);
+                communitySelect.disabled = true;
+                return;
+            }
+            communitySelect.disabled = false;
+            desired.forEach(o => {
+                const opt = document.createElement("option");
+                opt.value = o.value;
+                opt.textContent = o.text;
+                communitySelect.appendChild(opt);
+            });
+            // Keep current choice if still allowed; otherwise jump to first.
+            const stored = String(communityId);
+            const stillAllowed = desired.some(o => o.value === stored);
+            communitySelect.value = stillAllowed ? stored : desired[0].value;
+            if (!stillAllowed) {
+                localStorage.setItem("kubo_community_id", communitySelect.value);
+            }
+        }
+
+        function getCurrentUser() {
+            if (!currentUserId) return null;
+            return userDirectory.find(u => String(u.id) === String(currentUserId)) || null;
+        }
+
+        function refreshCommunityScopeForUser() {
+            const u = getCurrentUser();
+            applyCommunityScope(u ? u.communities : null);
+        }
+
+        // Render a user as e.g. "Caregiver C1-1 — Green Valley Care",
+        // "Center Owner 5 — Coastal Haven Senior Home",
+        // "Kubocare Admin (all communities)".
+        // Without this the picker just showed "Caregiver C1-1" which gave no
+        // hint about which community that user belongs to.
+        function describeUser(u) {
+            const allIds = Object.keys(communityNames).map(Number);
+            // Admin is mapped to every community; showing "(all communities)"
+            // is redundant for the only org-wide role we have, so just use
+            // the name. Non-admin users keep the community suffix because
+            // "Caregiver C1-1" alone gives no hint about which community.
+            if (u.communities.length === allIds.length
+                && allIds.every(id => u.communities.includes(id))) {
+                return u.name;
+            }
+            if (u.communities.length === 0) {
+                return `${u.name} (no community access)`;
+            }
+            const names = u.communities
+                .map(id => communityNames[id])
+                .filter(Boolean)
+                .join(", ");
+            return `${u.name} — ${names}`;
+        }
+
+        async function loadUsers() {
+            if (!userSelect) return;
+            try {
+                const res = await fetch("/users");
+                const payload = await res.json();
+                if (!payload.users) return;  // backend reported an error; leave demo-only.
+                userDirectory = payload.users;
+                // Group by role with <optgroup> labels for readability.
+                const roleLabel = {
+                    admin:         "Admin",
+                    center_owner:  "Center Owner",
+                    caregiver:     "Caregiver",
+                };
+                const byRole = userDirectory.reduce((acc, u) => {
+                    (acc[u.role] ||= []).push(u);
+                    return acc;
+                }, {});
+                Object.entries(byRole).forEach(([role, users]) => {
+                    const group = document.createElement("optgroup");
+                    group.label = roleLabel[role] || role;
+                    users.forEach(u => {
+                        const opt = document.createElement("option");
+                        opt.value = String(u.id);
+                        opt.textContent = describeUser(u);
+                        group.appendChild(opt);
+                    });
+                    userSelect.appendChild(group);
+                });
+                // Restore prior choice if it still exists.
+                if (currentUserId && userDirectory.some(u => String(u.id) === currentUserId)) {
+                    userSelect.value = currentUserId;
+                } else {
+                    currentUserId = "";
+                    localStorage.removeItem("kubo_user_id");
+                }
+                refreshCommunityScopeForUser();
+            } catch (_err) {
+                /* Network/backend down — silently leave demo path active. */
+            }
+        }
+
+        if (userSelect) {
+            userSelect.addEventListener("change", () => {
+                // Switching users MUST drop the in-memory chat view, the
+                // session list, and the localStorage namespace bucket; the
+                // safest, simplest way is a full reload, which also re-runs
+                // loadUsers() with the new "kubo_user_id" in place. Mirrors
+                // what the community select already does on change.
+                currentUserId = userSelect.value;
+                if (currentUserId) {
+                    localStorage.setItem("kubo_user_id", currentUserId);
+                } else {
+                    localStorage.removeItem("kubo_user_id");
+                }
+                // If the previously-selected community isn't reachable by
+                // the new user, jump to the first one they CAN reach so we
+                // don't reload into an "access denied" state.
+                const newUser = userDirectory.find(u => String(u.id) === currentUserId);
+                if (newUser && newUser.communities.length > 0
+                    && !newUser.communities.includes(communityId)) {
+                    localStorage.setItem("kubo_community_id", String(newUser.communities[0]));
+                }
+                location.reload();
+            });
+        }
+        loadUsers();
 
         if (communitySelect) {
             communitySelect.value = String(communityId);
@@ -1780,7 +1957,7 @@
             }
 
             try {
-                const response = await fetch(`/history/${encodeURIComponent(sessionId)}?community_id=${communityId}`);
+                const response = await fetch(`/history/${encodeURIComponent(sessionId)}?${communityScopeQuery()}`);
                 if (!response.ok) {
                     throw new Error(`History request failed with ${response.status}`);
                 }
@@ -1893,7 +2070,16 @@
                 const response = await fetch("/ask", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ query, session_id: sessionId, community_id: communityId }),
+                    body: JSON.stringify({
+                        query,
+                        session_id: sessionId,
+                        community_id: communityId,
+                        // Optional: sent only when the viewer picked a user.
+                        // When present, the backend's authorize_community
+                        // gate rejects the request if the user is not mapped
+                        // to community_id in community_user_mapping.
+                        ...(currentUserId ? { user_id: Number(currentUserId) } : {}),
+                    }),
                     signal: currentAbortController.signal
                 });
 
@@ -1954,7 +2140,7 @@
         async function deleteServerAttachment(fileId, ownerSessionId) {
             try {
                 await fetch(
-                    `/upload/${encodeURIComponent(fileId)}?session_id=${encodeURIComponent(ownerSessionId)}&community_id=${communityId}`,
+                    `/upload/${encodeURIComponent(fileId)}?session_id=${encodeURIComponent(ownerSessionId)}&${communityScopeQuery()}`,
                     { method: "DELETE" }
                 );
             } catch (_error) {
@@ -2086,6 +2272,12 @@
             formData.append("file", file);
             formData.append("session_id", uploadSession);
             formData.append("community_id", String(communityId));
+            if (currentUserId) {
+                // FastAPI Form(None) accepts a missing field; we only send
+                // user_id when a user is "logged in" so the demo path keeps
+                // working without it.
+                formData.append("user_id", currentUserId);
+            }
 
             try {
                 const response = await fetch("/upload", {

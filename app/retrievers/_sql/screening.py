@@ -1,3 +1,9 @@
+# ===========================================================================
+# This file turns a raw health number into a short, plain note. For example, a
+# heart rate of 95 becomes "within the normal resting range", while a very low
+# one becomes "worth flagging for review". These are gentle review hints to
+# help staff — NOT medical diagnoses, and every note says so.
+# ===========================================================================
 """Screening thresholds for resident metrics.
 
 Purpose

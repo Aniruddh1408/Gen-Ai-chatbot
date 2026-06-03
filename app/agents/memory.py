@@ -265,6 +265,11 @@ _NAME_STOPWORDS = {
     "list", "show", "give", "tell", "get", "me", "please", "on",
     "check", "review", "compare", "confirm", "use", "prioritize",
     "average", "avg", "mean",
+    # Device / sensor vocabulary — never a resident name. Without these,
+    # "what is the device id in that room?" treats "device id" as a name and
+    # the follow-up rewriter wrongly skips it as an explicit profile lookup.
+    "device", "devices", "sensor", "sensors", "radar", "id", "ids",
+    "status", "monitor", "monitoring", "in",
 }
 
 _COLLECTION_FOLLOWUP_METRIC_TERMS = [
@@ -496,6 +501,16 @@ def _collection_query_for_metric(metric: str) -> str | None:
     return None
 
 
+# Ranking / care phrasings produce a SMALL named set ("top 3 ... most care",
+# "oldest 5") whose specific names we DO want to capture for an "among them"
+# follow-up. Only a FULL roster list ("list all residents") should be skipped.
+_NAMED_SET_RANKING_TERMS = (
+    "top", "most", "least", "highest", "lowest", "oldest", "youngest",
+    "eldest", "best", "worst", "care", "priority", "risk", "fewest",
+    "concerning", "stable",
+)
+
+
 def _latest_resident_name_set(chat_history: list[dict]) -> list[str]:
     recent_history = _get_recent_meaningful_history(chat_history, limit=2)
     for turn in reversed(recent_history):
@@ -503,10 +518,13 @@ def _latest_resident_name_set(chat_history: list[dict]) -> list[str]:
         ai_text = str(turn.get("ai", "")).lower()
         if "residents in this community:" in ai_text:
             continue
-        if re.search(
+        # Skip a full-roster list request, but NOT a ranked/care subset — those
+        # name the specific residents the user is now asking "among them" about.
+        is_full_list_request = re.search(
             r"\b(?:all|list|show|display|get|give)\b.*\b(?:residents|patients)\b",
             user_text,
-        ):
+        ) and not any(term in user_text for term in _NAMED_SET_RANKING_TERMS)
+        if is_full_list_request:
             continue
         combined_text = f"{turn.get('user', '')}\n{turn.get('ai', '')}"
         candidates = _candidate_names_from_text(combined_text)
@@ -577,6 +595,11 @@ def _rewrite_named_set_followup(new_query: str, chat_history: list[dict]) -> str
         return f"Who is younger among {joined_names}?"
 
     if _contains_any_term(q_lower, _CARE_FOLLOWUP_TERMS):
+        if _contains_any_term(
+            q_lower,
+            ["least", "less", "lowest", "fewest", "minimal", "most stable", "healthiest", "best health"],
+        ):
+            return f"Which of {joined_names} needs the least care?"
         return f"Which of {joined_names} needs more care?"
 
     metric = _metric_from_query(q_lower)
@@ -847,12 +870,48 @@ def _is_plausible_resident_name_fragment(candidate: str) -> bool:
     return True
 
 
+# Prepositions / articles / time words that a greedy capture can sweep onto a
+# name's edges (e.g. "for Lakshmi Krishnan in the last week" -> "Lakshmi
+# Krishnan In"). Trimmed from BOTH ends before the plausibility check.
+# Deliberately EXCLUDES list separators like "and"/"or": a capture such as
+# "priya leela and" must stay rejected (it's a list of first names, not one
+# person), so we leave the separator in place for _is_plausible_resident_name
+# to reject rather than salvaging a bogus "Priya Leela".
+_EDGE_TRIM_WORDS = {
+    "in", "at", "to", "by", "from", "of", "for", "about",
+    "the", "a", "an", "is", "was", "are", "were",
+    "last", "this", "next", "recent", "recently", "now", "today",
+    "yesterday", "week", "weeks", "day", "days", "month", "months",
+    "year", "years", "need", "needs", "more", "care", "fall", "falls",
+    "had", "have", "has", "doing", "still", "currently",
+}
+
+
+def _trim_edge_words(candidate: str) -> str:
+    """Drop leading/trailing function words a greedy capture pulled in."""
+    tokens = candidate.split()
+
+    def is_edge(token: str) -> bool:
+        return token.lower().strip(" .,?!'\"") in _EDGE_TRIM_WORDS
+
+    while tokens and is_edge(tokens[0]):
+        tokens.pop(0)
+    while tokens and is_edge(tokens[-1]):
+        tokens.pop()
+    return " ".join(tokens)
+
+
 def _candidate_names_from_text(text: str) -> list[str]:
     candidates: list[str] = []
 
     capitalized_patterns = [
         r"\bName:\s*([A-Z][a-z]+(?:[ \t]+[A-Z][a-z]+){1,2})\b",
         r"\b([A-Z][a-z]+(?:[ \t]+[A-Z][a-z]+){1,2})(?=[ \t]+\(|'s\b|[ \t]+is\b|[ \t]+-)",
+        # Bulleted/numbered ranking or care-list rows: "- Anil Sharma, age 86 —
+        # score 6", "1. Mary Johnson — 84 years". Capture the name when it is
+        # followed by a comma, a dash (-, –, —), "(", or " age".
+        r"^\s*(?:[-*]|\d+\.)\s+([A-Z][a-z]+(?:[ \t]+[A-Z][a-z]+){1,2})"
+        r"(?=,|[ \t]+[—–-]|[ \t]+\(|[ \t]+age\b)",
     ]
     lower_patterns = [
         r"\b(?:about|of|for|is)[ \t]+([a-z]+(?:[ \t]+[a-z]+){1,2})\b",
@@ -861,17 +920,104 @@ def _candidate_names_from_text(text: str) -> list[str]:
 
     for line in text.splitlines():
         for pattern in capitalized_patterns:
-            candidates.extend(match.group(1).strip().title() for match in re.finditer(pattern, line))
+            candidates.extend(
+                _trim_edge_words(match.group(1)).title()
+                for match in re.finditer(pattern, line)
+            )
 
         text_lower = line.lower()
         for pattern in lower_patterns:
-            candidates.extend(match.group(1).strip().title() for match in re.finditer(pattern, text_lower))
+            candidates.extend(
+                _trim_edge_words(match.group(1)).title()
+                for match in re.finditer(pattern, text_lower)
+            )
 
     unique: list[str] = []
     for candidate in candidates:
         if _is_plausible_resident_name(candidate) and not _is_known_community_name(candidate) and candidate not in unique:
             unique.append(candidate)
     return unique
+
+
+# "any other resident", "anyone else", "another patient" — a follow-up that
+# asks about residents OTHER THAN the one currently in focus. We resolve the
+# focus resident from history and rewrite to an explicit "other than <Name>"
+# form so the SQL handler can exclude them instead of re-listing the same row.
+_OTHER_RESIDENT_RE = re.compile(
+    r"\b(?:any\s+)?other\s+(?:resident|patient)s?\b"
+    r"|\banother\s+(?:resident|patient)\b"
+    r"|\b(?:any\s*one|anyone|anybody|some\s*one|someone|somebody)\s+else\b"
+    r"|\bwho\s+else\b"
+    r"|\brest\s+of\s+the\s+(?:residents|patients)\b",
+    re.IGNORECASE,
+)
+_WHO_ELSE_RE = re.compile(r"\bwho\s+else\b", re.IGNORECASE)
+_OTHER_RESIDENT_REPLACEMENTS = [
+    (r"\bany\s+other\s+(resident|patient)s\b", r"any \1s other than {name}"),
+    (r"\bany\s+other\s+(resident|patient)\b", r"any \1 other than {name}"),
+    (r"\bother\s+(resident|patient)s\b", r"\1s other than {name}"),
+    (r"\bother\s+(resident|patient)\b", r"\1 other than {name}"),
+    (r"\banother\s+(resident|patient)\b", r"a \1 other than {name}"),
+    (r"\b(?:any\s*one|anyone|anybody|some\s*one|someone|somebody)\s+else\b",
+     "any resident other than {name}"),
+    (r"\brest\s+of\s+the\s+(residents|patients)\b", r"\1 other than {name}"),
+]
+
+
+# "the device in that room", "who is in this room" — a follow-up that points
+# back at a room mentioned in the previous turn. We resolve the resident in
+# focus and rewrite "that/this room" to "<focus>'s room" so the device/room
+# handlers can resolve it without depending on the LLM.
+# Only demonstratives ("that room" / "this room" / "the same room"). Pronoun
+# forms like "his room" are already handled by _rewrite_single_resident_followup.
+_THAT_ROOM_RE = re.compile(r"\b(?:that|this|the\s+same)\s+room\b", re.IGNORECASE)
+
+
+def _rewrite_that_room_followup(new_query: str, chat_history: list[dict]) -> str | None:
+    if not _THAT_ROOM_RE.search(new_query):
+        return None
+    focus = _latest_single_resident_name(chat_history)
+    if not focus:
+        return None
+    return _THAT_ROOM_RE.sub(f"{focus}'s room", new_query, count=1)
+
+
+def _rewrite_exclusion_followup(new_query: str, chat_history: list[dict]) -> str | None:
+    """Rewrite an "other / who else" follow-up into an explicit
+    "... other than <names> ..." form using the resident(s) from recent history.
+
+    The exclusion target is the FULL set the previous turn named — so after a
+    care list ("Anil, Kamala, Sunita"), "who else needs care?" excludes all
+    three and surfaces the next residents. Falls back to the single resident in
+    focus (e.g. after one fall answer). Returns None when there's nobody to
+    exclude (the query then runs community-wide as before)."""
+    if not _OTHER_RESIDENT_RE.search(new_query.lower()):
+        return None
+
+    # Prefer the full named set (ranked/care list); else the single focus.
+    targets = _latest_resident_name_set(chat_history)
+    if len(targets) < 2:
+        single = _latest_single_resident_name(chat_history)
+        targets = [single] if single else []
+    if not targets:
+        return None
+
+    joined = _join_resident_names(targets)
+
+    # "who else needs the most care?" -> "who needs the most care other than
+    # Anil Sharma, Kamala Iyengar, and Sunita Rao?" — keep the verb phrase
+    # intact (so SQL intent detection still fires) and append the exclusion.
+    if _WHO_ELSE_RE.search(new_query):
+        base = _WHO_ELSE_RE.sub("who", new_query, count=1).strip().rstrip("?.!").strip()
+        return f"{base} other than {joined}?"
+
+    for pattern, template in _OTHER_RESIDENT_REPLACEMENTS:
+        rewritten = re.sub(
+            pattern, template.format(name=joined), new_query, count=1, flags=re.IGNORECASE
+        )
+        if rewritten != new_query:
+            return rewritten
+    return None
 
 
 def _latest_single_resident_name(chat_history: list[dict]) -> str | None:
@@ -1007,6 +1153,16 @@ def rewrite_query_with_memory(session_id: str, new_query: str) -> str:
     # memory follow-up to the previous resident.
     if _is_self_contained_explanation_query(new_query):
         return new_query
+
+    deterministic_rewrite = _rewrite_exclusion_followup(new_query, chat_history)
+    if deterministic_rewrite:
+        logger.info(f"Query Refined deterministically: {deterministic_rewrite}")
+        return deterministic_rewrite
+
+    deterministic_rewrite = _rewrite_that_room_followup(new_query, chat_history)
+    if deterministic_rewrite:
+        logger.info(f"Query Refined deterministically: {deterministic_rewrite}")
+        return deterministic_rewrite
 
     deterministic_rewrite = _rewrite_named_set_followup(new_query, chat_history)
     if deterministic_rewrite:

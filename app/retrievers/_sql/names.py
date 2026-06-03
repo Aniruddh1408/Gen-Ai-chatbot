@@ -1,3 +1,10 @@
+# ===========================================================================
+# This file figures out WHO a question is about. From a sentence like "how old
+# is Anil Sharma?" it pulls out the name "Anil Sharma" (or a resident ID
+# number). It also notices when someone says "other than Mohan" so the rest of
+# the system knows to leave that person out. It only reads text — it never
+# touches the database.
+# ===========================================================================
 """Resident name / id / community-reference extraction helpers.
 
 Pure text logic (no DB/LLM). Re-exported from sql_retriever.py.
@@ -180,18 +187,23 @@ def _extract_resident_name_fragment(query: str) -> str | None:
 # community-wide query ("did any other resident fall?", "who else needs care?").
 # The memory rewriter turns "any other resident" / "who else" into an explicit
 # "other than <focus>" form, which this then parses back out.
+# The memory rewriter turns "any other resident" / "who else" into an explicit
+# "other than <focus>" form (one name, or a list "A, B, and C" after a ranked
+# list), which this captures as the whole tail of the clause.
 _EXCLUDE_RESIDENT_RE = re.compile(
     r"\b(?:other\s+than|apart\s+from|aside\s+from|except(?:\s+for)?|besides|"
-    r"excluding|not\s+including)\s+(?:resident\s+|patient\s+)?"
-    r"([a-z][a-z'’.\-]*(?:\s+[a-z][a-z'’.\-]*){0,2})",
+    r"excluding|not\s+including)\s+(?:resident\s+|patient\s+)?(.+)",
     re.IGNORECASE,
 )
-# Structural words a greedy name capture may sweep up after the excluded name.
+# Structural / list words a name capture may sweep up around the excluded
+# name(s). Trimmed from both ends of each candidate.
 _EXCLUDE_TRAILING_STOP = {
-    "have", "had", "has", "a", "the", "any", "recently", "lately", "in", "this",
-    "last", "fall", "falls", "fell", "fallen", "incident", "incidents", "alert",
-    "alerts", "is", "was", "are", "were", "do", "does", "did", "on", "record",
-    "need", "needs", "care", "attention", "most", "more", "fall",
+    "have", "had", "has", "a", "an", "the", "any", "recently", "lately", "in",
+    "this", "last", "fall", "falls", "fell", "fallen", "incident", "incidents",
+    "alert", "alerts", "is", "was", "are", "were", "do", "does", "did", "on",
+    "record", "need", "needs", "care", "attention", "most", "more", "and", "or",
+    "room", "rooms", "week", "weeks", "day", "days", "month", "today",
+    "yesterday", "still", "currently", "now",
 }
 # Domain words that are NOT people — guards against reading "conditions other
 # than diabetes" as excluding a resident named "Diabetes".
@@ -201,31 +213,52 @@ _EXCLUDE_NON_NAME_WORDS = {
     "surgery", "post-surgery", "mobility", "chronic", "illness", "condition",
     "conditions", "fall", "falls", "incident", "incidents", "alert", "alerts",
     "vitals", "sleep", "wellness", "age", "room", "medication", "today",
-    "yesterday", "normal", "usual", "that", "this",
+    "yesterday", "normal", "usual", "that", "this", "device", "devices",
+    "sensor", "sensors",
 }
 
 
-def _extract_excluded_resident_name(query: str) -> str | None:
-    """Return the resident named after an exclusion phrase, or None.
+def _extract_excluded_resident_names(query: str) -> list[str]:
+    """Return ALL residents named after an exclusion phrase, in order.
 
-    "did any resident other than Mohan Rao have a fall" -> "Mohan Rao".
-    Pure text logic; the caller decides what to do with the exclusion.
-    Returns None when the captured token is plainly not a person (a condition,
-    metric, or stopword) so "conditions other than diabetes" isn't misread as
-    excluding a resident.
+    "other than Mohan Rao have a fall"            -> ["Mohan Rao"]
+    "other than Anil Sharma, Kamala Iyengar, and
+     Sunita Rao"                                  -> ["Anil Sharma", "Kamala Iyengar", "Sunita Rao"]
+
+    Pure text logic. A captured chunk that is plainly not a person (a
+    condition, metric, or stopword) is dropped, so "conditions other than
+    diabetes" yields [].
     """
     match = _EXCLUDE_RESIDENT_RE.search(query)
     if not match:
-        return None
-    tokens = match.group(1).split()
-    while tokens and tokens[-1].lower().strip(".,?!'’") in _EXCLUDE_TRAILING_STOP:
-        tokens.pop()
-    if not tokens:
-        return None
-    lowered = [t.lower().strip(".,?!'’") for t in tokens]
-    if all(t in _RESIDENT_NAME_STOPWORDS or t in _EXCLUDE_NON_NAME_WORDS for t in lowered):
-        return None
-    return " ".join(tokens).title()
+        return []
+    tail = match.group(1).strip().rstrip("?.!").strip()
+    names: list[str] = []
+    seen: set[str] = set()
+    for chunk in re.split(r"\s*,\s*|\s+and\s+", tail):
+        tokens = chunk.split()
+        # Trim structural / list words from both ends.
+        while tokens and tokens[0].lower().strip(".,?!'’") in _EXCLUDE_TRAILING_STOP:
+            tokens.pop(0)
+        while tokens and tokens[-1].lower().strip(".,?!'’") in _EXCLUDE_TRAILING_STOP:
+            tokens.pop()
+        if not tokens:
+            continue
+        lowered = [t.lower().strip(".,?!'’") for t in tokens]
+        if all(t in _RESIDENT_NAME_STOPWORDS or t in _EXCLUDE_NON_NAME_WORDS for t in lowered):
+            continue
+        name = " ".join(tokens).title()
+        if name.lower() not in seen:
+            seen.add(name.lower())
+            names.append(name)
+    return names
+
+
+def _extract_excluded_resident_name(query: str) -> str | None:
+    """First excluded resident name (or None). Convenience for single-name
+    handlers; see _extract_excluded_resident_names for the full list."""
+    names = _extract_excluded_resident_names(query)
+    return names[0] if names else None
 
 
 def _extract_resident_id(query: str) -> int | None:

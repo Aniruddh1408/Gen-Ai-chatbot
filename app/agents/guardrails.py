@@ -1,6 +1,24 @@
 """
 Guardrails - input validation and output sanitization.
 Uses deterministic keyword and regex rules instead of an LLM for reliability.
+
+# Schema-migration notes
+This file was written against the legacy schema's vocabulary (device_status,
+DEV1/DEV2 board ids, BP/sugar/steps metrics, ESP32/arduino device terms).
+The new production schema has none of those tables/columns. The keyword
+lists below have been trimmed where keeping a term would just be noise; a
+few legacy items remain only because they're harmless allowlist entries
+(a query mentioning "device" will still pass the input guardrail and fall
+through to the LLM planner, which then returns whatever the schema allows).
+
+# PHI / cross-resident leak check
+This keyword guardrail does not itself verify resident names. That backstop
+now lives in app/agents/grounding.py: route_query runs foreign_resident_names()
+on every LLM-synthesized SQL answer and declines any that asserts a resident
+who isn't in the caller's community roster — catching hallucinated names,
+wrong-resident answers, and cross-community leakage regardless of phrasing.
+Combined with the authorize_community gate and the SQL validator's mandatory
+community_id predicate, that closes the previously-documented output gap.
 """
 import re
 
@@ -27,49 +45,49 @@ _INJECTION_PATTERNS = [
 _INJECTION_RE = re.compile("|".join(_INJECTION_PATTERNS), re.IGNORECASE)
 
 _DOMAIN_KEYWORDS = [
-    "device", "devices", "sensor", "sensors", "board", "boards", "telemetry",
-    "dev1", "dev2", "dev3", "dev4", "dev5",
-    "iot", "hardware", "firmware", "ota", "wifi", "router", "gateway",
-    "microcontroller", "esp32", "arduino", "raspberry", "node", "unit",
-    "active", "offline", "online", "connected", "connection",
-    "resident", "residents", "patient", "patients", "flat", "flats", "age", "ages", "room", "rooms",
-    "medical", "history", "histories", "prescribed", "intake", "medication", "medications",
-    "hypertension", "diabetes", "pre-diabetes", "prediabetes", "arthritis", "asthma",
-    "cardiovascular", "cardiac", "osteoporosis", "thyroid", "surgery", "post-surgery",
-    "mobility", "chronic", "metformin", "amlodipine", "paracetamol", "salbutamol",
-    "atorvastatin", "aspirin", "calcium", "vitamin", "telmisartan", "levothyroxine",
-    "multivitamin",
+    # Core entities the new schema actually has columns for.
+    "resident", "residents", "patient", "patients",
+    "community", "room", "rooms", "flat", "flats",
+    "age", "ages", "name", "names",
+    "medical", "history", "histories",
+    # Conditions matched by _RESIDENT_TEXT_SEARCH_RULES.
+    "hypertension", "diabetes", "pre-diabetes", "prediabetes", "arthritis",
+    "asthma", "cardiovascular", "cardiac", "osteoporosis", "thyroid",
+    "surgery", "post-surgery", "mobility", "chronic",
+    # Care staff / clinical vocabulary.
     "doctor", "clinical", "clinician", "nurse", "staff",
-    "escalate", "escalated", "escalation", "handoff", "support", "operator",
-    "policy", "procedure", "privacy", "security", "sensitive", "hipaa",
-    "wellness", "handover", "shift handoff", "fall", "fall risk",
-    "hydration", "nutrition", "stale", "timestamp", "freshness",
-    "duplicate", "conflicting", "manual entry", "traceability",
-    "health", "healthier", "healthy", "healthiest", "unhealthy", "unhealthier", "unhealthiest", "stable", "unstable",
-    "report", "bp", "blood pressure",
-    "systolic", "diastolic", "sugar", "glucose", "step", "steps", "walked", "walking",
-    "sleep", "slept", "analytics",
-    "quality", "duration", "patient", "score", "scores", "vital", "vitals",
+    "escalate", "escalated", "escalation", "handoff", "support",
+    "policy", "procedure", "privacy", "sensitive", "hipaa",
+    # Vitals / sleep / activity / wellness — backed by Phase C sensor seed.
+    "vital", "vitals", "hr", "heart rate", "rr", "respiration",
+    "sleep", "slept", "sleeping",
+    "activity", "active", "walking", "walked",
+    "wellness", "score", "scores", "quality", "duration",
+    "incident", "incidents", "alert", "alerts",
+    "notification", "notifications", "insight", "insights",
+    "fall", "fall risk", "out of bed", "out of room", "movement",
+    "ambience", "ambient", "temperature", "humidity",
+    # General health framing.
+    "health", "healthier", "healthy", "healthiest", "unhealthy",
+    "unhealthier", "unhealthiest", "stable", "unstable",
     "critical", "attention", "risk", "risks", "priority", "prioritize",
     "unwell", "well", "better", "worse", "poor", "poorest", "concern", "concerns",
-    "signal", "uptime", "cpu", "temperature", "moisture", "battery",
-    "humidity", "pressure", "voltage", "current", "power", "energy",
+    "hydration", "nutrition", "fever", "cholesterol",
+    # Aggregations + comparators the LLM planner sees in queries.
     "average", "avg", "sum", "count", "max", "min", "total", "mean",
-    "peak", "lowest", "highest", "above", "below", "over", "under", "greater", "fewer",
-    "best", "worst", "most", "least", "top", "bottom",
-    "fewest", "longest", "shortest", "oldest", "eldest", "youngest", "older",
-    "younger", "last", "latest", "historical",
-    "location", "zone", "floor", "building", "area", "site", "warehouse",
-    "flashing", "error", "reset", "recalibrate", "calibrat", "blink",
-    "sleep mode", "e-404", "red light", "green light", "trouble", "broken",
-    "fix", "issue", "problem", "fault", "diagnostic", "status",
-    "metric", "data", "detail", "details", "info", "information", "profile", "profiles",
-    "query", "table", "report", "analytics", "graph", "chart",
+    "peak", "lowest", "highest", "above", "below", "over", "under",
+    "greater", "fewer", "best", "worst", "most", "least", "top", "bottom",
+    "fewest", "longest", "shortest", "oldest", "eldest", "youngest",
+    "older", "younger", "last", "latest", "historical",
+    # Time framing.
     "yesterday", "today", "last hour", "last week", "month", "year",
+    # Conversational verbs.
     "list", "show", "find", "check", "get", "tell", "monitor", "help",
-    "care", "needs", "need", "requires", "require", "context", "question", "follow", "mean",
-    "antibiotic", "cholesterol", "fever", "heart", "insulin", "medicine",
-    "stroke", "symptom", "symptoms", "tablet",
+    "care", "needs", "need", "requires", "require", "context", "question",
+    "follow", "mean",
+    # Output framing.
+    "report", "graph", "chart", "metric", "data", "detail", "details",
+    "info", "information", "profile", "profiles", "summary",
 ]
 _SHORT_GREETING_TERMS = ["hi", "hello", "hey", "help", "ankit", "i am"]
 
@@ -103,12 +121,13 @@ _RESIDENT_LOOKUP_PATTERNS = [
 _RESIDENT_LOOKUP_RE = re.compile("|".join(_RESIDENT_LOOKUP_PATTERNS), re.IGNORECASE)
 
 _DOMAIN_QUERY_PATTERNS = [
-    r"\bwho\s+(?:slept|walked)\b",
+    r"\bwho\s+(?:slept|walked|fell|fallen)\b",
     r"\bwho\s+(?:needs?|requires?|should\s+get)\b.*\b(?:care|attention|monitoring|support|priority)\b",
     r"\b(?:which|who)\b.*\b(?:healthiest|unhealthiest|oldest|eldest|youngest|longest|shortest)\b",
-    r"\b(?:highest|lowest|best|worst|most|least|top|bottom|fewest)\b.*\b(?:bp|blood pressure|sugar|glucose|steps?|sleep|score|duration|uptime|signal|cpu)\b",
-    r"\b(?:bp|blood pressure|sugar|glucose|steps?|sleep|slept|vitals?)\b.*\b(?:highest|lowest|best|worst|most|least|average|avg|mean|longest|shortest)\b",
-    r"\bdev[0-9]+\b",
+    # Superlatives + metrics the new schema can actually answer for
+    # (hr / rr from vitals, sleep_sessions, wellness_metrics.score).
+    r"\b(?:highest|lowest|best|worst|most|least|top|bottom|fewest)\b.*\b(?:hr|heart rate|rr|respiration|sleep|score|duration|wellness)\b",
+    r"\b(?:hr|heart rate|rr|respiration|sleep|slept|vitals?|wellness)\b.*\b(?:highest|lowest|best|worst|most|least|average|avg|mean|longest|shortest)\b",
 ]
 _DOMAIN_QUERY_RE = re.compile("|".join(_DOMAIN_QUERY_PATTERNS), re.IGNORECASE)
 
@@ -116,12 +135,13 @@ _GENERAL_MEDICAL_QUESTION_RE = re.compile(
     r"\b(?:what\s+(?:is|are)|explain|define|meaning\s+of|how\s+(?:does|do)|"
     r"how\s+(?:is|are|can|should|to)|why\s+(?:does|do|is|are)|"
     r"side\s+effects?|uses?\s+of|benefits?\s+of|risks?\s+of)\b"
-    r".*\b(?:amlodipine|aspirin|atorvastatin|calcium|levothyroxine|metformin|"
-    r"multivitamin|paracetamol|salbutamol|telmisartan|antibiotic|inhaler|"
-    r"insulin|medicine|medication|tablet|arthritis|asthma|blood pressure|bp|"
-    r"cardiac|cardiovascular|cholesterol|diabetes|fever|glucose|heart|"
-    r"hypertension|osteoporosis|pre-diabetes|prediabetes|stroke|sugar|"
-    r"symptoms?|thyroid|vitals?)\b",
+    # The condition list still matches resident_profile.medical_history
+    # values; general drug terms are kept as no-ops because the new schema
+    # has no medical_intake_prescribed column to look them up in (queries
+    # mentioning them fall through to the LLM and get a polite "no data").
+    r".*\b(?:arthritis|asthma|cardiac|cardiovascular|cholesterol|diabetes|"
+    r"fever|heart|hypertension|osteoporosis|pre-diabetes|prediabetes|stroke|"
+    r"symptoms?|thyroid|vitals?|sleep|insomnia|fall|medication|medicine)\b",
     re.IGNORECASE,
 )
 
@@ -172,16 +192,22 @@ def input_guardrail(query: str) -> bool:
 # Output Guardrail
 # ----------------------------
 _BAD_PHRASES = [
+    # Prompt-leak signatures (verbatim opening lines of internal prompts).
     "system_prompt",
     "you are a strict sql planner",
     "forget previous instructions",
     "you are an ai security guard",
     "you are a query rewriter",
     "you are an intention classifier",
-    "select.*from.*device_status",
+    # Backend internal leaks.
     "def handle_sql",
     "psycopg2",
     "ollama",
+    # Schema-leak signatures. The community-scope predicate is forced by
+    # the SQL validator on every internal query; if it ever surfaces in
+    # output, something is leaking the assembled SQL.
+    "rm.community_id = %s",
+    "resident_profile.dob::date",
 ]
 _BAD_PATTERN = re.compile("|".join(_BAD_PHRASES), re.IGNORECASE)
 

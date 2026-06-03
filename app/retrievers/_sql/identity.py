@@ -1,3 +1,10 @@
+# ===========================================================================
+# This file decides EXACTLY which resident you mean. If two residents share a
+# first name, it asks "which one did you mean?" instead of guessing. If you
+# made a small typo in the name, it finds the closest real match. If nobody
+# matches, it says so honestly. This is the safeguard that stops the assistant
+# from accidentally answering about the wrong person.
+# ===========================================================================
 """Central resident identity resolver.
 
 Single place that turns a free-text query into a *decision* about which

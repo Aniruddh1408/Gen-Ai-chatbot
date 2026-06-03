@@ -1,3 +1,10 @@
+# ===========================================================================
+# This is a second, stricter safety inspector for database requests — used
+# especially for requests the AI writes itself. It carefully reads the
+# structure of a request to guarantee it only reads data, uses only approved
+# tables, never peeks at system internals, and stays limited to the right
+# community. If anything looks off, the request is blocked.
+# ===========================================================================
 """Strict SQL validator for the Kubocare schema.
 
 This is the new validator that the rewritten retriever (Phase B.6+) and

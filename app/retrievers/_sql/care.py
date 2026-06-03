@@ -1,56 +1,20 @@
+# ===========================================================================
+# This file answers "who needs the most care?" and "who is most at risk?". It
+# looks at each resident's recent falls, sleep, vitals, age, and health history,
+# gives each person a simple score, and ranks them so staff can see who to check
+# first. It can also answer "who has fallen the most?" and honor counts like
+# "give me just one person".
+# ===========================================================================
 """Care-priority handler — "who needs the most care?", "who is at risk?".
 
 What it does
-------------
+
 Given a community, pull every signal the new schema actually has data for
 (latest vitals, last night's sleep, latest wellness rollup, recent fall
 events, age, medical history) and score each resident with the screening
 thresholds in `app/retrievers/_sql/screening.py`. The handler then ranks
 residents by composite score and returns a short, reasoned summary.
 
-Why not the LLM planner
------------------------
-The legacy 4000-line `sql_retriever.py` had a deterministic care-priority
-block. When the schema was migrated, that block was removed because its
-inputs (BP, sugar, steps) didn't exist in the new tables. The LLM
-planner alone can't reconstruct multi-signal scoring — it picks one
-column (e.g., `resident_profile.no_of_falls`, which is always 0 in the
-seed) and produces confident but wrong answers like *"X needs the most
-care because they have the highest number of falls — 0."* This handler
-restores the missing logic against the columns that DO exist now: HR,
-RR, sleep_sessions, wellness_metrics, incidents, age, and the
-medical-history free-text.
-
-Scoring rules — tuned so a confirmed fall plus a low wellness score
-clearly outranks "old age + hypertension":
-
-  Falls
-    confirmed_fall in 7d                  +5
-    fall_alert / suspected_alert (single) +3
-    fall_alert / suspected_alert (≥2)     +4
-
-  Vitals
-    HR concerning (band='concerning')     +3
-    HR low / elevated                     +1
-    RR concerning                         +3
-    RR low / elevated                     +1
-
-  Sleep (last night)
-    duration concerning (<4h)             +3
-    duration low (<6h)                    +1
-
-  Wellness (latest day)
-    weakest score concerning (<50)        +3
-    weakest score elevated (50-59)        +1
-
-  Age
-    90+                                   +2
-    85-89                                 +1
-
-  Chronic medical history
-    each chronic term present             +1
-    (diabetes, hypertension, cardiac/cardiovascular,
-     post-surgery, asthma, osteoporosis, thyroid)
 """
 from __future__ import annotations
 
@@ -59,7 +23,7 @@ from typing import Any
 
 from app.core.db import run_query
 from app.core.logger import get_logger
-from app.retrievers._sql.names import _extract_excluded_resident_name
+from app.retrievers._sql.names import _extract_excluded_resident_names
 from app.retrievers._sql.screening import (
     classify_fall_pattern,
     classify_hr,
@@ -77,6 +41,9 @@ logger = get_logger("sql_retriever.care")
 
 _CARE_PRIORITY_PATTERNS = [
     r"\bwho\s+needs?\s+(?:the\s+)?(?:most|more|highest|extra)\s+(?:care|attention|monitoring|support)\b",
+    # Bare "who needs care" and "who else needs care" (no superlative) should
+    # also land here rather than dying in the LLM planner.
+    r"\bwho\s+(?:else\s+)?needs?\s+(?:care|attention|monitoring|support|help|watching|checking)\b",
     r"\bwho\s+(?:should|do|i\s+should)\s+(?:i\s+)?(?:focus|prioritize|prioritise|watch|check)\b",
     r"\bwho\s+(?:is|are)\s+(?:the\s+)?(?:most\s+)?(?:at\s+risk|concerning|unwell|critical|priority)\b",
     r"\bwhich\s+resident(?:s)?\s+(?:needs?|should|are)\b.*\b(?:care|attention|priority|risk|watch|check)\b",
@@ -546,16 +513,19 @@ def _step_care_priority(query: str, community_id: int) -> dict | None:
             "answer": "No residents on file in this community.",
         }
 
-    # "who else needs care / who needs care other than X" — drop the resident
-    # in focus so the ranking reflects everyone *else*.
-    exclude_name = _extract_excluded_resident_name(query)
-    if exclude_name:
-        needle = exclude_name.lower()
-        residents = [r for r in residents if needle not in (r["name"] or "").lower()]
+    # "who else needs care / who needs care other than A, B, C" — drop every
+    # resident already named so the ranking reflects everyone *else*.
+    exclude_names = _extract_excluded_resident_names(query)
+    if exclude_names:
+        needles = [n.lower() for n in exclude_names]
+        residents = [
+            r for r in residents
+            if not any(n in (r["name"] or "").lower() for n in needles)
+        ]
         if not residents:
             return {
                 "query": query,
-                "plan": {"_macro": "care_priority", "exclude_name": exclude_name},
+                "plan": {"_macro": "care_priority", "exclude_name": exclude_names[0]},
                 "result": [],
                 "answer": "No other residents are on file in this community.",
             }
@@ -590,7 +560,7 @@ def _step_care_priority(query: str, community_id: int) -> dict | None:
         "plan": {
             "_macro": "care_priority",
             "direction": direction,
-            "exclude_name": exclude_name,
+            "exclude_name": exclude_names[0] if exclude_names else None,
             "leader_name": scored[0][2]["name"] if scored else None,
             "leader_score": scored[0][0] if scored else None,
         },
@@ -599,6 +569,178 @@ def _step_care_priority(query: str, community_id: int) -> dict | None:
             for s, reasons, r in scored
         ],
         "answer": answer,
+    }
+
+
+# ===========================================================================
+# Resident comparison — "compare the sleep of X and Y", "who's doing better,
+# X or Y?", "X vs Y". Reuses the same per-resident signal loaders and the
+# _score_resident attention score, but scoped to the named residents and
+# rendered side by side with a verdict on who's better / who needs attention.
+# ===========================================================================
+
+# A comparison needs either an explicit compare cue or a health-metric word,
+# AND (checked in the handler) two or more named residents. The two-name
+# requirement is the real signal — it's phrasing-robust because it keys on the
+# roster names, not on how the question is worded.
+_COMPARE_CUE_RE = re.compile(
+    r"\b(?:compare|comparison|compared|comparing|versus|vs\.?|"
+    r"side[-\s]by[-\s]side|stacks?\s+up|against\s+each\s+other|"
+    r"who(?:'s| is| are)?\s+(?:doing\s+)?(?:better|worse|healthier|best|worst)|"
+    r"better\s+or\s+worse)\b",
+    re.IGNORECASE,
+)
+_COMPARE_METRIC_RE = re.compile(
+    r"\b(?:sleep|slept|sleeping|vitals?|heart\s*rate|hr|pulse|respiration|"
+    r"wellness|well[-\s]?being|wellbeing|fall|falls|fell|incident|incidents|"
+    r"health|metrics?|doing|attention|condition|overall)\b",
+    re.IGNORECASE,
+)
+
+
+def _attach_avg_sleep(residents: list[dict[str, Any]], community_id: int, nights: int = 7) -> None:
+    """Average nightly minutes asleep (non-awake stages) over the last
+    ``nights`` nights — a fairer comparison signal than a single night. Stored
+    back into ``sleep_minutes`` so _score_resident reflects typical sleep."""
+    rows = run_query(
+        f"""
+        SELECT rp.id,
+               (SUM(EXTRACT(EPOCH FROM (s.end_duration - s.start_duration)) / 60)
+                / NULLIF(COUNT(DISTINCT (s.start_duration - INTERVAL '12 hours')::date), 0)
+               )::int AS avg_asleep_min
+        FROM sleep_sessions s
+        JOIN objects o
+          ON o.object_id = s.board AND COALESCE(o.is_deleted, false) = false
+        JOIN rooms r
+          ON r.id = o.room_id AND COALESCE(r.is_deleted, false) = false
+        JOIN room_resident_mapping rrm
+          ON rrm.room_id = r.id AND COALESCE(rrm.is_deleted, false) = false
+        JOIN resident_profile rp
+          ON rp.id = rrm.resident_id AND COALESCE(rp.is_deleted, false) = false
+        WHERE r.community_id = %s
+          AND s.sleep_stage::text != 'awake'
+          AND s.start_duration > now() - INTERVAL '{nights + 1} days'
+        GROUP BY rp.id
+        """,
+        (community_id,),
+    )
+    by_id = {r["id"]: r for r in residents}
+    for rid, minutes in rows:
+        if rid in by_id:
+            by_id[rid]["sleep_minutes"] = int(minutes) if minutes is not None else None
+
+
+def _hm(minutes: int | None) -> str:
+    if not minutes:
+        return "—"
+    h, m = divmod(int(minutes), 60)
+    if h and m:
+        return f"{h}h {m}m"
+    return f"{h}h" if h else f"{m}m"
+
+
+def _join_names(names: list[str]) -> str:
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return f"{names[0]} and {names[1]}"
+    return ", ".join(names[:-1]) + f", and {names[-1]}"
+
+
+def _format_resident_comparison(scored: list[tuple[int, list[str], dict[str, Any]]]) -> str:
+    """Side-by-side per-resident block plus a verdict. ``scored`` is in the
+    order the residents were named; the verdict is derived from the attention
+    score (lower = doing better)."""
+    names = [r["name"] for _, _, r in scored]
+    lines = [f"Comparing {_join_names(names)} (recent data, last 7 days):", ""]
+
+    for score, _reasons, r in scored:
+        sleep = f"{_hm(r['sleep_minutes'])}/night" if r["sleep_minutes"] else "no recent sleep data"
+        hr = f"{r['hr']:.0f} bpm" if r["hr"] is not None else "—"
+        rr = f"{r['rr']:.0f}/min" if r["rr"] is not None else "—"
+        if r["wellness_min_score"] is not None:
+            well = f"{r['wellness_min_type'] or 'wellness'} {r['wellness_min_score']:.0f} (weakest)"
+        else:
+            well = "—"
+        falls = r["fall_count"]
+        fall_txt = f"{falls} fall{'s' if falls != 1 else ''}" if falls else "no falls"
+        lines.append(f"{r['name']} — concern score {score}")
+        lines.append(
+            f"  Sleep {sleep} · heart rate {hr} · respiration {rr} · "
+            f"wellness {well} · {fall_txt} (7d)"
+        )
+        lines.append("")
+
+    best = min(scored, key=lambda i: i[0])
+    worst = max(scored, key=lambda i: i[0])
+    if best[0] == worst[0]:
+        # Tie on concern score — separate by typical sleep, then wellness.
+        ranked = sorted(
+            scored,
+            key=lambda i: (-(i[2]["sleep_minutes"] or 0), -(i[2]["wellness_min_score"] or 0)),
+        )
+        if best[0] == 0:
+            verdict = (
+                "All look stable right now — no concerning signals across sleep, "
+                f"vitals, wellness, or falls. {ranked[0][2]['name']} edges ahead on "
+                f"sleep and wellness; {ranked[-1][2]['name']} is the one to keep a "
+                "light eye on."
+            )
+        else:
+            verdict = (
+                f"{ranked[0][2]['name']} and {ranked[-1][2]['name']} carry similar "
+                "concern levels — review both."
+            )
+    else:
+        worst_reasons = "; ".join(worst[1][:2]) if worst[1] else "more signals worth watching"
+        verdict = (
+            f"{best[2]['name']} is doing better overall (lowest concern score). "
+            f"{worst[2]['name']} needs more attention — {worst_reasons}."
+        )
+    lines.append(verdict)
+    return "\n".join(lines)
+
+
+def _step_compare_residents(query: str, community_id: int) -> dict | None:
+    """Compare two or more named residents across all metrics, with a verdict."""
+    q = query.lower()
+    if not (_COMPARE_CUE_RE.search(q) or _COMPARE_METRIC_RE.search(q)):
+        return None
+
+    # Lazy import to avoid a cycle (sql_retriever imports this module).
+    from app.retrievers.sql_retriever import _find_resident_names_in_query
+
+    found = _find_resident_names_in_query(query, community_id)
+    seen: set[str] = set()
+    names = [n for n in found if not (n in seen or seen.add(n))]
+    if len(names) < 2:
+        return None  # not a multi-resident question — let other handlers run
+
+    residents = _load_residents(community_id)
+    targets = [r for r in residents if r["name"] in names]
+    if len(targets) < 2:
+        return None
+    # Present residents in the order they were named in the question.
+    order = {n: i for i, n in enumerate(names)}
+    targets.sort(key=lambda r: order.get(r["name"], len(order)))
+
+    _attach_latest_vitals(targets, community_id)
+    _attach_avg_sleep(targets, community_id)
+    _attach_latest_wellness_weakest(targets, community_id)
+    _attach_fall_counts(targets, community_id)
+
+    scored = [(s, reasons, r) for r in targets for s, reasons in [_score_resident(r)]]
+    logger.info(
+        "Deterministic resident-comparison plan: residents=%s",
+        [r["name"] for r in targets],
+    )
+    return {
+        "query": query,
+        "plan": {"_macro": "compare_residents", "residents": [r["name"] for r in targets]},
+        "result": [
+            {"name": r["name"], "score": s, "reasons": reasons} for s, reasons, r in scored
+        ],
+        "answer": _format_resident_comparison(scored),
     }
 
 
@@ -629,9 +771,9 @@ def _step_fall_ranking(query: str, community_id: int) -> dict | None:
     if not _detect_fall_ranking(query):
         return None
 
-    # "who else fell the most / who fell the most other than X" — exclude the
-    # resident in focus from the leaderboard.
-    exclude_name = _extract_excluded_resident_name(query)
+    # "who else fell the most / who fell the most other than A, B" — exclude the
+    # resident(s) in focus from the leaderboard.
+    exclude_names = _extract_excluded_resident_names(query)
     conditions = [
         "r.community_id = %s",
         "i.event_category::text IN ('fall_alert', 'confirmed_fall', 'suspected_alert')",
@@ -639,10 +781,12 @@ def _step_fall_ranking(query: str, community_id: int) -> dict | None:
         "COALESCE(i.is_deleted, false) = false",
     ]
     params: list = [community_id]
-    if exclude_name:
+    if exclude_names:
         conditions.append("rp.name IS NOT NULL")
-        conditions.append("rp.name NOT ILIKE %s")
-        params.append(f"%{exclude_name}%")
+        for name in exclude_names:
+            conditions.append("rp.name NOT ILIKE %s")
+            params.append(f"%{name}%")
+    exclude_name = exclude_names[0] if exclude_names else None
 
     rows = run_query(
         f"""

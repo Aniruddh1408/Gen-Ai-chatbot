@@ -1,3 +1,8 @@
+# ===========================================================================
+# This file holds tiny formatting helpers that make numbers read nicely — for
+# example, turning "440 minutes" into "7h 20m", and writing short, friendly
+# explanation sentences for health metrics. It just shapes text and numbers.
+# ===========================================================================
 """Small pure formatting/number helpers for sql_retriever (no DB/LLM)."""
 def _to_float(value) -> float | None:
     if value is None:

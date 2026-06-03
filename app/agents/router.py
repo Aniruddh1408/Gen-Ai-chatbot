@@ -6,10 +6,17 @@ import re
 from app.core.config import LLM_CHAT_TEMPERATURE
 from app.core.logger import get_logger
 from app.llm.client import ask_llm
+from app.agents.grounding import foreign_resident_names
+from app.retrievers._sql.directory import handle_directory_query
+from app.retrievers._sql.normalize import correct_domain_typos
 from app.retrievers.sql_retriever import handle_sql
 from app.retrievers.vector_retriever import handle_rag, has_relevant_documentation
 
 logger = get_logger("router")
+
+# Standard safe decline — kept identical to identity.unavailable() wording so
+# the user sees one consistent message across every fail-closed path.
+_UNAVAILABLE_MESSAGE = "I couldn't find that information in the available records."
 
 
 def _contains_term(text: str, term: str) -> bool:
@@ -63,6 +70,16 @@ FORCE_SQL_WORDS = [
     "vital", "vitals", "who is", "signal", "uptime",
     "cpu", "processor", "load", "temperature", "humidity", "pressure", "voltage", "current",
     "power", "energy", "device", "devices", "board", "boards", "telemetry", "device status",
+    # Sensor / incident vocabulary — these route to the deterministic
+    # incident / vitals / sleep / wellness handlers in
+    # app/retrievers/_sql/sensors.py. Without them, "did X fall recently?"
+    # and "show me recent incidents" fall through to general chat and
+    # the model hallucinates a refusal ("I don't have access to records").
+    "fall", "falls", "fell", "fallen",
+    "incident", "incidents", "alert", "alerts",
+    "notification", "notifications",
+    "hr", "heart", "heart rate", "rr", "respiration", "pulse",
+    "wellness", "well-being", "wellbeing",
 ]
 FORCE_SQL_PHRASES = [
     "more than", "less than", "higher than", "lower than", "greater than",
@@ -100,6 +117,16 @@ ROOM_LOOKUP_RE = re.compile(
     r"[a-z]+(?:\s+[a-z]+){0,2}\s+(?:stay|staying|live|living|assigned)|"
     r"(?:what|which)\s+(?:flat|room)(?:\s+(?:number|no))?\s+(?:is|does)\s+"
     r"(?:resident\s+|patient\s+)?[a-z]+(?:\s+[a-z]+){0,2}(?:\s+(?:in|have|has))?)\b",
+    re.IGNORECASE,
+)
+# Holistic resident status — "how is anil doing?", "is anil sharma stable?",
+# "is X okay today?". Matches a small set of well-formed phrasings only so it
+# doesn't fire on generic "how are you?" / "are you ok?" chitchat.
+HOLISTIC_LOOKUP_RE = re.compile(
+    r"\b(?:how\s+(?:is|are)|how['’]s)\s+(?:resident\s+|patient\s+)?"
+    r"[a-z]+(?:\s+[a-z]+){0,2}\s+doing\b"
+    r"|\b(?:is|how['’]s)\s+(?:resident\s+|patient\s+)?"
+    r"[a-z]+(?:\s+[a-z]+){0,2}\s+(?:doing\s+)?(?:ok|okay|fine|stable|alright|well|good)\b",
     re.IGNORECASE,
 )
 DEVICE_ID_RE = re.compile(r"\bdev[1-5]\b", re.IGNORECASE)
@@ -213,6 +240,26 @@ _GENERAL_CLINICAL_TOPIC_NOUNS = [
     "side effects", "symptom", "symptoms", "therapy", "treatment",
     "treatments", "use", "uses",
 ]
+_WELLNESS_ADVICE_VERB_PREFIXES = (
+    "how to ", "how do i ", "how can i ", "how should i ", "how do we ",
+    "how can we ", "how should we ", "how can one ", "how can someone ",
+)
+_WELLNESS_ADVICE_IMPLICIT_PREFIXES = (
+    "ways to ", "tips to ", "tips for ", "advice on ", "advice for ",
+)
+_WELLNESS_ADVICE_VERBS = [
+    "improve", "boost", "increase", "decrease", "lower", "raise",
+    "reduce", "manage", "maintain", "control", "regulate", "stabilize",
+    "enhance", "promote", "fix", "treat",
+]
+_WELLNESS_TOPICS = [
+    "sleep", "sleep quality", "sleep duration", "sleep score",
+    "blood pressure", "bp", "sugar", "glucose", "sugar level",
+    "steps", "step count", "activity", "exercise",
+    "weight", "diet", "nutrition", "hydration", "stress", "mood",
+    "wellness", "fitness",
+]
+
 _POSSESSIVE_NAME_RE = re.compile(r"\b[a-z]+(?:\s+[a-z]+){0,2}'s\b", re.IGNORECASE)
 _DOC_ROUTING_DISTANCE = 0.93
 _METRIC_CONCEPT_RE = re.compile(
@@ -364,6 +411,33 @@ def _looks_like_generic_explanatory_query(query: str) -> bool:
     return True
 
 
+def _looks_like_wellness_advice_query(query: str) -> bool:
+    q = query.lower().strip()
+    starts_with_verb_prefix = any(q.startswith(prefix) for prefix in _WELLNESS_ADVICE_VERB_PREFIXES)
+    starts_with_implicit_prefix = any(q.startswith(prefix) for prefix in _WELLNESS_ADVICE_IMPLICIT_PREFIXES)
+    if not (starts_with_verb_prefix or starts_with_implicit_prefix):
+        return False
+    if _looks_like_resident_lookup(q) or _POSSESSIVE_NAME_RE.search(q):
+        return False
+    if _has_named_metric_hint(q):
+        return False
+    for blocker in _GENERAL_CLINICAL_DATA_BLOCKERS:
+        if " " in blocker:
+            if blocker in q:
+                return False
+        elif _contains_term(q, blocker):
+            return False
+    has_topic = any(
+        topic in q if " " in topic else _contains_term(q, topic)
+        for topic in _WELLNESS_TOPICS
+    )
+    if not has_topic:
+        return False
+    if starts_with_implicit_prefix:
+        return True
+    return any(_contains_term(q, verb) for verb in _WELLNESS_ADVICE_VERBS)
+
+
 def _looks_like_general_clinical_education_query(query: str) -> bool:
     q = query.lower().strip()
     if not _has_general_clinical_term(q):
@@ -422,6 +496,8 @@ def _looks_like_clear_sql_query(query: str) -> bool:
     if DEVICE_ID_RE.search(q):
         return True
     if AGE_LOOKUP_RE.search(q) or ROOM_LOOKUP_RE.search(q):
+        return True
+    if HOLISTIC_LOOKUP_RE.search(q):
         return True
     if any(phrase in q for phrase in FORCE_SQL_PHRASES):
         return True
@@ -491,8 +567,22 @@ def _has_named_metric_hint(query: str) -> bool:
         return True
     non_name_fragments = {
         "what", "which", "who", "how", "many", "much", "is", "are", "was", "were",
-        "the", "a", "an", "his", "her", "their", "current", "latest", "average",
-        "avg", "mean", "good", "bad", "normal", "ideal", "high", "low",
+        "the", "a", "an", "his", "her", "their", "my", "your", "our", "its",
+        "this", "that", "these", "those",
+        "current", "latest", "average", "avg", "mean", "good", "bad", "normal",
+        "ideal", "high", "low", "best", "worst", "poor", "better", "worse",
+        "improve", "improving", "boost", "boosting", "increase", "increasing",
+        "decrease", "decreasing", "lower", "lowering", "raise", "raising",
+        "reduce", "reducing", "fix", "fixing", "manage", "managing",
+        "maintain", "maintaining", "control", "controlling", "regulate",
+        "regulating", "treat", "treating", "monitor", "monitoring", "track",
+        "tracking", "check", "checking", "measure", "measuring", "stabilize",
+        "stabilizing", "enhance", "enhancing", "promote", "promoting",
+        "for", "of", "to", "with", "without", "about", "from", "in", "on", "at",
+        "by", "after", "before", "during", "while", "than", "as",
+        "can", "could", "would", "should", "will", "may", "might", "must", "shall",
+        "do", "does", "did", "have", "has", "had",
+        "more", "less", "very", "really", "quite", "too", "also", "just", "only",
     }
 
     def is_name_fragment(candidate: str) -> bool:
@@ -656,6 +746,9 @@ def classify_intent(query: str) -> str:
     if _looks_like_kubocare_product_documentation_query(q):
         return "RAG"
 
+    if _looks_like_wellness_advice_query(q):
+        return "CHAT"
+
     if DEVICE_ID_RE.search(q) or _has_named_metric_hint(q):
         return "SQL"
 
@@ -722,9 +815,28 @@ def route_query(
     chat_history: list[dict] | None = None,
     *,
     community_id: int,
+    user_id: int | None = None,
 ) -> dict:
+    # Run domain-vocabulary typo correction at the very top of the router
+    # so the intent classifier sees canonical words. Without this, "list the
+    # residants" misses FORCE_SQL_WORDS, gets routed to chat, and never
+    # reaches the SQL handler's own typo-correction pass. The original
+    # `query` is preserved in the response payload via the dispatch steps.
+    corrected = correct_domain_typos(query)
+    if corrected != query:
+        logger.info(f"Router typo-corrected: {query!r} -> {corrected!r}")
+        query = corrected
+    if original_query is not None:
+        original_query = correct_domain_typos(original_query)
     raw_query = (original_query or query).strip()
     q_lower = raw_query.lower().strip()
+    # Role-aware directory questions ("list communities", "list caregivers")
+    # are answered here, before intent classification, because their correct
+    # answer depends on the caller's role — not on SQL/RAG/chat heuristics.
+    directory = handle_directory_query(raw_query, community_id=community_id, user_id=user_id)
+    if directory is not None:
+        directory.setdefault("query", query)
+        return directory
     guidance_answer = _metric_guidance_answer(raw_query)
     if guidance_answer:
         return {
@@ -775,6 +887,19 @@ def route_query(
     if intent == "SQL":
         logger.info("Routing to SQL...")
         res = handle_sql(query, community_id=community_id)
+        # Roster-grounding backstop: an LLM-synthesized (planner-fallback) answer
+        # is the one place a hallucinated / wrong-resident / cross-community name
+        # can appear. Verify it against this community's roster; if it asserts a
+        # resident who isn't here, don't trust it — decline rather than risk a
+        # fabricated fact. Fails open on infra errors.
+        if res.get("_synthesized") and res.get("answer"):
+            foreign = foreign_resident_names(res["answer"], community_id)
+            if foreign:
+                logger.warning(
+                    "Declining ungrounded SQL answer; named non-roster residents",
+                    extra={"foreign_count": len(foreign)},
+                )
+                res = {"query": res.get("query", query), "answer": _UNAVAILABLE_MESSAGE}
         # Hybrid fallback: if structured data has nothing, try documentation,
         # but only use it when it can actually answer the question.
         if _sql_found_nothing(res):
@@ -783,7 +908,8 @@ def route_query(
                 logger.info("SQL had no data; answered from documentation fallback.")
                 return doc_fallback
         if "error" in res and not any(_contains_term(query.lower(), word) for word in ["iot", "signal", "uptime"]):
-            res["answer"] = "I couldn't find matches in the database. Please check the name or ID."
+            # Safe, non-leaky wording — no "database"/SQL mention.
+            res["answer"] = "I couldn't find that information in the available records."
         return res
 
     logger.info("Routing to RAG...")

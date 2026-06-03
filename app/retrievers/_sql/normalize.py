@@ -1,3 +1,9 @@
+# ===========================================================================
+# This file cleans up a question before the assistant reads it. It fixes small
+# typos (so "holdest" becomes "oldest" and "residant" becomes "resident") and
+# understands ranking words like "2nd", "third", "second oldest". That way a
+# quick typo on a phone doesn't stop the assistant from understanding you.
+# ===========================================================================
 """Query pre-processor: typo correction and ordinal extraction.
 
 Why this exists

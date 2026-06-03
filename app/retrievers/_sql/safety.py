@@ -1,3 +1,9 @@
+# ===========================================================================
+# This file is a safety gate for database requests. Before any request runs, it
+# checks that the request only READS information and can never change or delete
+# anything, and that it only touches approved tables and columns. Think of it
+# as a guard who inspects every request and turns away anything risky.
+# ===========================================================================
 """Read-only SQL validation primitives for sql_retriever.
 
 Pure logic (schema allowlist + statement checks); no DB/LLM. Moved out of

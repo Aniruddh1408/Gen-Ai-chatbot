@@ -1,3 +1,10 @@
+# ===========================================================================
+# This file answers "list the communities" and "list the caregivers" — but only
+# shows what the person asking is allowed to see. An admin sees everything; a
+# community owner sees their own community's staff; a caregiver isn't allowed to
+# see the staff directory at all. This is what keeps each community's people
+# private from the others.
+# ===========================================================================
 """Role-aware directory handlers: communities and staff (caregivers).
 
 The rest of the SQL retriever answers *resident*-scoped questions inside one

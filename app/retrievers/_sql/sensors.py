@@ -1,3 +1,10 @@
+# ===========================================================================
+# This file answers questions about a resident's day-to-day signals: falls and
+# alerts, heart rate and breathing, last night's sleep, and wellness scores.
+# It can answer for one named resident ("how did Anil sleep?") or for the whole
+# community ("any falls this week?"), and it always sticks to the facts in the
+# records. "How is X doing?" gets a short all-round summary.
+# ===========================================================================
 """Deterministic SQL handlers for sensor / incident questions.
 
 Why this module exists
@@ -157,6 +164,28 @@ _SLEEP_SESSION_RE = re.compile(
     r"sleep\s+stage|sleep\s+stages|rem|sleep\s+breakdown|sleep\s+pattern)\b",
     re.IGNORECASE,
 )
+# Multi-night sleep questions. "less/least/worst" → the night with the LEAST
+# sleep; "most/best/longest" → the MOST; trend/compare/"last week"/"each night"
+# → list every night so a caregiver can compare across the window. Bare "how
+# did X sleep" (no comparator) stays on the single most-recent-night path.
+_SLEEP_LEAST_RE = re.compile(
+    r"\b(?:less|least|worst|lowest|shortest|fewest|worse)\b", re.IGNORECASE
+)
+_SLEEP_MOST_RE = re.compile(
+    r"\b(?:most|best|longest|highest|deepest|better)\b", re.IGNORECASE
+)
+_SLEEP_HISTORY_RE = re.compile(
+    r"\b(?:trend|trends|history|each\s+night|every\s+night|all\s+(?:the\s+)?nights|"
+    r"over\s+the\s+(?:last|past)|"
+    # any "week"/"weeks" reference: "this/last/past/the/1/a/one/two/2/few/several
+    # weeks", and bare "weekly"/"fortnight".
+    r"(?:this|last|past|the|one|1|a|two|2|few|several|couple\s+of)\s+weeks?|"
+    r"weekly|fortnight|"
+    # explicit day spans: "7 days", "last 14 days", "15 days", etc.
+    r"\d+\s+days|"
+    r"compare|comparison|nightly|by\s+night)\b",
+    re.IGNORECASE,
+)
 
 # Wellness aggregate score (wellness_metrics).
 _WELLNESS_TERM_RE = re.compile(
@@ -164,10 +193,39 @@ _WELLNESS_TERM_RE = re.compile(
     re.IGNORECASE,
 )
 
+# "when did X fall", "when was the fall", "what time / what day" — the user
+# wants the timing of the event, not a yes/no confirmation. Drives a lead that
+# states *when* rather than the default "Yes — X has N fall events" framing.
+_WHEN_QUERY_RE = re.compile(
+    r"\b(?:when|what\s+time|what\s+day|what\s+date)\b", re.IGNORECASE
+)
+
 # Time-window phrasing → INTERVAL the SQL filter should use.
 _TIME_WINDOW_TODAY_RE = re.compile(r"\b(?:today|now|currently)\b", re.IGNORECASE)
 _TIME_WINDOW_YESTERDAY_RE = re.compile(r"\b(?:yesterday|last\s+night|tonight)\b", re.IGNORECASE)
 _TIME_WINDOW_MONTH_RE = re.compile(r"\b(?:this\s+month|last\s+month|past\s+month|30\s+days)\b", re.IGNORECASE)
+
+# Explicit calendar dates the user might name ("sleep on May 30", "30 May",
+# "2026-05-30"). Relative phrasing ("last night", "yesterday") is deliberately
+# NOT handled here — those should keep falling through to the most-recent-night
+# default. Only an explicit month+day / ISO date pins a specific night.
+_MONTHS = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+    "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+    "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9, "oct": 10,
+    "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
+}
+_MONTH_NAMES_RE = (
+    "jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|"
+    "aug|august|sep|sept|september|oct|october|nov|november|dec|december"
+)
+_MONTH_DAY_RE = re.compile(
+    rf"\b({_MONTH_NAMES_RE})\s+(\d{{1,2}})(?:st|nd|rd|th)?\b", re.IGNORECASE
+)
+_DAY_MONTH_RE = re.compile(
+    rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+(?:of\s+)?({_MONTH_NAMES_RE})\b", re.IGNORECASE
+)
+_ISO_DATE_RE = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
 
 
 def _resident_filter_value(name: str) -> str:
@@ -218,6 +276,43 @@ def _human_date(date) -> str:
     if date.year == today.year:
         return f"{date.strftime('%b')} {date.day}"
     return f"{date.strftime('%b')} {date.day}, {date.year}"
+
+
+def _extract_target_date(query: str):
+    """Pull an explicit calendar date out of the query, or return None.
+
+    Accepts "May 30", "30 May", "30th of May", and ISO "2026-05-30". A
+    bare month+day is assumed to be the most recent occurrence: this year,
+    unless that date is still in the future (then last year). Relative words
+    like "yesterday" / "last night" are intentionally not handled here.
+    """
+    from datetime import date, datetime
+
+    iso = _ISO_DATE_RE.search(query)
+    if iso:
+        try:
+            return date(int(iso.group(1)), int(iso.group(2)), int(iso.group(3)))
+        except ValueError:
+            return None
+
+    m = _MONTH_DAY_RE.search(query)
+    if m:
+        month, day = _MONTHS[m.group(1).lower()], int(m.group(2))
+    else:
+        m = _DAY_MONTH_RE.search(query)
+        if not m:
+            return None
+        month, day = _MONTHS[m.group(2).lower()], int(m.group(1))
+
+    today = datetime.now().date()
+    for year in (today.year, today.year - 1):
+        try:
+            candidate = date(year, month, day)
+        except ValueError:
+            return None  # e.g. "February 30" — not a real date
+        if candidate <= today:
+            return candidate
+    return None
 
 
 def _resolve_resident_target(query: str, community_id: int) -> tuple[int | None, str | None]:
@@ -278,10 +373,16 @@ def _build_incidents_sql(
     resident_id: int | None,
     resident_name: str | None,
     exclude_name: str | None = None,
+    *,
+    interval: str | None = None,
+    is_fall_query: bool | None = None,
+    is_active_only: bool | None = None,
 ) -> tuple[str, list, dict]:
     """Build a community-scoped incidents query.
 
-    Decisions encoded:
+    Decisions encoded (each can be overridden by an explicit keyword arg, which
+    the LLM-intent path uses; when an arg is None they're derived from the query
+    text exactly as before):
       - "fall/fell/fallen" → restrict event_category to the three fall enums.
         Otherwise allow any event_category (the user said "incidents", not
         "falls").
@@ -293,17 +394,21 @@ def _build_incidents_sql(
         dumping months of history.
     """
     q_lower = query.lower()
-    is_fall_query = bool(_FALL_TERM_RE.search(q_lower))
-    is_active_only = bool(_ACTIVE_ALERT_RE.search(q_lower))
+    if is_fall_query is None:
+        is_fall_query = bool(_FALL_TERM_RE.search(q_lower))
+    if is_active_only is None:
+        is_active_only = bool(_ACTIVE_ALERT_RE.search(q_lower))
+    is_when_query = bool(_WHEN_QUERY_RE.search(q_lower))
 
-    if _TIME_WINDOW_TODAY_RE.search(q_lower):
-        interval = "1 day"
-    elif _TIME_WINDOW_YESTERDAY_RE.search(q_lower):
-        interval = "2 days"
-    elif _TIME_WINDOW_MONTH_RE.search(q_lower):
-        interval = "30 days"
-    else:
-        interval = "7 days"
+    if interval is None:
+        if _TIME_WINDOW_TODAY_RE.search(q_lower):
+            interval = "1 day"
+        elif _TIME_WINDOW_YESTERDAY_RE.search(q_lower):
+            interval = "2 days"
+        elif _TIME_WINDOW_MONTH_RE.search(q_lower):
+            interval = "30 days"
+        else:
+            interval = "7 days"
 
     select_cols = (
         "i.event_category, i.event_outcome, i.event_time, i.status, "
@@ -346,6 +451,7 @@ def _build_incidents_sql(
         "interval": interval,
         "is_fall_query": is_fall_query,
         "is_active_only": is_active_only,
+        "is_when_query": is_when_query,
         "resident_name": resident_name,
         "resident_id": resident_id,
         "exclude_name": exclude_name,
@@ -363,6 +469,7 @@ def _format_incidents_answer(rows: list, meta: dict) -> str:
     resident_name = meta.get("resident_name")
     is_fall_query = meta.get("is_fall_query")
     is_active_only = meta.get("is_active_only")
+    is_when_query = meta.get("is_when_query")
     exclude_name = meta.get("exclude_name")
     interval = meta.get("interval", "7 days")
     window_phrase = {
@@ -419,6 +526,21 @@ def _format_incidents_answer(rows: list, meta: dict) -> str:
             f"There's {_plural(count, 'active alert')} in this community right now."
             if count else "No active alerts at the moment."
         )
+    elif is_when_query and resident_name:
+        # "When did X fall?" — answer with the timing of the most recent
+        # event (rows are ordered event_time DESC) instead of the yes/no
+        # "Yes — X has N fall events" framing, which doesn't fit a "when"
+        # question. The supporting events still follow in the bullet list.
+        noun = "fall" if is_fall_query else "incident"
+        label = "fall event" if is_fall_query else "incident"
+        most_recent_when = _human_clock(rows[0][2])
+        if count == 1:
+            lead = f"{resident_name}'s most recent {noun} was logged {most_recent_when}."
+        else:
+            lead = (
+                f"{resident_name}'s most recent {noun} was logged {most_recent_when} "
+                f"({_plural(count, label)} on record {window_phrase})."
+            )
     elif is_fall_query and resident_name:
         lead = (
             f"Yes — {resident_name} has {_plural(count, 'fall event')} on record "
@@ -428,7 +550,7 @@ def _format_incidents_answer(rows: list, meta: dict) -> str:
         lead = (
             f"{_plural(count, 'fall event').capitalize()} {('has' if count == 1 else 'have')} "
             f"been logged across this community {window_phrase}"
-            + (f" ({active_count} still active)." if active_count else ".")
+            + (f" ({active_count} still unresolved)." if active_count else ".")
         )
     elif resident_name:
         lead = (
@@ -439,13 +561,16 @@ def _format_incidents_answer(rows: list, meta: dict) -> str:
         lead = (
             f"{_plural(count, 'incident').capitalize()} {('has' if count == 1 else 'have')} "
             f"been logged in this community {window_phrase}"
-            + (f" ({active_count} still active)." if active_count else ".")
+            + (f" ({active_count} still unresolved)." if active_count else ".")
         )
 
     lines = [lead, ""]
     for category, outcome, event_time, status, name, room_name in rows:
         when = _human_clock(event_time)
-        state = "resolved" if status else "still active"
+        # incidents.status is the alert's response state (true=resolved by a
+        # caregiver, false=open). Render false as "unresolved", not "active" —
+        # the fall itself is a point-in-time event; what's open is the alert.
+        state = "resolved" if status else "unresolved"
         who = name if name else (room_name or "an unassigned room")
         outcome_text = f" — {outcome}" if outcome else ""
         # Render "fall_alert" → "fall alert" so it reads as English.
@@ -532,6 +657,270 @@ def _step_incidents(query: str, community_id: int) -> dict | None:
         "sql": sql,
         "result": rows,
         "answer": _format_incidents_answer(rows, meta),
+    }
+
+
+# ===========================================================================
+# Devices / sensors in rooms
+#
+# Each room carries KuboCare monitoring sensors (rows in the `objects` table:
+# a fall-detection sensor and a vitals/radar sensor, with text ids like
+# OBJ-00075). Without this handler "list the devices" and "what device is in
+# X's room" fell through to the resident handlers and returned a wrong/empty
+# answer. This answers three shapes: a community-wide device list/count, the
+# device(s) in a named resident's room, and the device(s) in a named room.
+# ===========================================================================
+
+# "device(s)", "sensor(s)", "radar" — the words that mean "monitoring hardware".
+_DEVICE_TERM_RE = re.compile(r"\b(?:devices?|sensors?|radar)\b", re.IGNORECASE)
+# Each room has ONE KuboCare radar device (object_type 'sensor') that handles
+# fall detection, bed algorithms, and vitals together. furniture (the bed) is
+# not a device. The legacy split types are kept in the IN-list only so the
+# handler still works against un-migrated data. Hard-coded enum literals.
+_DEVICE_TYPES_SQL = "('sensor', 'sensor_fds', 'sensor_vitals')"
+_DEVICE_TYPE_LABELS = {
+    "sensor": "KuboCare radar (fall detection, bed monitoring & vitals)",
+    "sensor_fds": "fall-detection sensor",
+    "sensor_vitals": "vitals/radar sensor",
+}
+# "in room 3", "room F-1" — capture the room token after the word "room".
+_ROOM_NAME_RE = re.compile(r"\broom\s+([a-z]?-?\d+|[a-z0-9][a-z0-9-]*)\b", re.IGNORECASE)
+_DEVICE_COUNT_RE = re.compile(r"\b(?:how\s+many|number\s+of|count\s+of)\b", re.IGNORECASE)
+# "are all devices online / active / working?" — a status question that wants a
+# yes/no summary, not the full device list.
+_DEVICE_STATUS_RE = re.compile(
+    r"\b(?:active|inactive|online|offline|working|not\s+working|down|"
+    r"responding|operational|functioning|status|health|healthy|up|running|"
+    r"connected|disconnected|reachable|live)\b",
+    re.IGNORECASE,
+)
+
+
+def _device_label(object_type) -> str:
+    return _DEVICE_TYPE_LABELS.get(str(object_type), str(object_type).replace("_", " "))
+
+
+def _device_status_text(status, device_status) -> str:
+    """Render the device's health as a short, plain word."""
+    if device_status:
+        return str(device_status)
+    s = str(status).lower() if status is not None else ""
+    if s in ("good", "true"):
+        return "online"
+    if s in ("no_response", "false"):
+        return "not responding"
+    return s or "status unknown"
+
+
+def _device_is_online(status, device_status) -> bool:
+    return _device_status_text(status, device_status) == "online"
+
+
+def _format_devices_status(rows: list, scope_label: str) -> str:
+    """Answer "are all devices online?" with a yes/no summary, listing only the
+    devices that need attention. Row layout (shared by all scopes):
+    [object_id, object_type, device_status, status, room_name, ...]."""
+    total = len(rows)
+    if total == 0:
+        return f"There are no monitoring devices on record in {scope_label}."
+
+    offline = [r for r in rows if not _device_is_online(r[3], r[2])]
+    if not offline:
+        if total == 1:
+            return f"Yes — the KuboCare radar in {scope_label} is online."
+        return f"Yes — all {total} KuboCare radar devices in {scope_label} are online."
+
+    online_n = total - len(offline)
+    lines = [
+        f"No — {online_n} of {total} devices in {scope_label} are online; "
+        f"{len(offline)} need attention:",
+        "",
+    ]
+    for object_id, object_type, device_status, status, room_name, *_ in offline:
+        where = f"{room_name} " if room_name else ""
+        lines.append(f"- {where}({object_id}) — {_device_status_text(status, device_status)}")
+    return "\n".join(lines)
+
+
+def _detect_device_plan(query: str) -> bool:
+    return bool(_DEVICE_TERM_RE.search(query.lower()))
+
+
+def _resolve_device_resident(query: str, community_id: int) -> tuple[int | None, str | None]:
+    """Resolve a resident named in a device question, using the roster matcher
+    (robust to "Hari Menon's" / "hari menons"). Returns (id, canonical_name)."""
+    resident_id = _extract_resident_id(query)
+    if resident_id is not None:
+        return resident_id, None
+    from app.retrievers.sql_retriever import _find_resident_names_in_query
+
+    matches = _find_resident_names_in_query(query, community_id)
+    if matches:
+        return None, matches[0]
+    return None, None
+
+
+def _format_devices_for_resident(name: str, rows: list) -> str:
+    if not rows:
+        return (
+            f"I couldn't find any monitoring devices linked to {name}'s room "
+            "in the records."
+        )
+    room_name = rows[0][4] or "their room"
+    count = len(rows)
+    noun = "device" if count == 1 else "devices"
+    lines = [f"{name}'s room ({room_name}) has {count} monitoring {noun}:", ""]
+    for object_id, object_type, device_status, status, _room in rows:
+        lines.append(
+            f"- {object_id} — {_device_label(object_type)} "
+            f"({_device_status_text(status, device_status)})"
+        )
+    return "\n".join(lines)
+
+
+def _format_devices_for_room(room_label: str, rows: list) -> str:
+    if not rows:
+        return f"I couldn't find any monitoring devices in {room_label}."
+    count = len(rows)
+    noun = "device" if count == 1 else "devices"
+    lines = [f"{room_label} has {count} monitoring {noun}:", ""]
+    for object_id, object_type, device_status, status, _room in rows:
+        lines.append(
+            f"- {object_id} — {_device_label(object_type)} "
+            f"({_device_status_text(status, device_status)})"
+        )
+    return "\n".join(lines)
+
+
+def _format_devices_list(rows: list) -> str:
+    if not rows:
+        return "There are no monitoring devices on record in this community."
+    count = len(rows)
+    lines = [
+        f"There {'is' if count == 1 else 'are'} {count} monitoring "
+        f"{'device' if count == 1 else 'devices'} across this community "
+        "(one KuboCare radar per room):",
+        "",
+    ]
+    current_room = object()  # sentinel
+    for object_id, object_type, device_status, status, room_name, resident in rows:
+        if room_name != current_room:
+            current_room = room_name
+            who = f" — {resident}" if resident else ""
+            lines.append(f"{room_name or 'Unassigned room'}{who}:")
+        lines.append(
+            f"  - {object_id} — {_device_label(object_type)} "
+            f"({_device_status_text(status, device_status)})"
+        )
+    return "\n".join(lines)
+
+
+def _step_devices(query: str, community_id: int) -> dict | None:
+    if not _detect_device_plan(query):
+        return None
+
+    q = query.lower()
+    status_mode = bool(_DEVICE_STATUS_RE.search(q))
+
+    # 1) Device(s) in a named resident's room.
+    resident_id, resident_name = _resolve_device_resident(query, community_id)
+    if resident_id is not None or resident_name:
+        conditions = ["r.community_id = %s"]
+        params: list = [community_id]
+        if resident_id is not None:
+            conditions.append("rp.id = %s")
+            params.append(resident_id)
+        else:
+            conditions.append("rp.name ILIKE %s")
+            params.append(f"%{_resident_filter_value(resident_name)}%")
+        sql = (
+            "SELECT o.object_id, o.object_type::text, o.device_status, o.status::text, r.room_name "
+            "FROM objects o "
+            "JOIN rooms r ON r.id = o.room_id AND COALESCE(r.is_deleted, false) = false "
+            "JOIN room_resident_mapping rrm ON rrm.room_id = r.id AND COALESCE(rrm.is_deleted, false) = false "
+            "JOIN resident_profile rp ON rp.id = rrm.resident_id AND COALESCE(rp.is_deleted, false) = false "
+            f"WHERE {' AND '.join(conditions)} "
+            f"AND o.object_type::text IN {_DEVICE_TYPES_SQL} "
+            "AND COALESCE(o.is_deleted, false) = false "
+            "ORDER BY o.object_id"
+        )
+        _validate_read_only_sql(sql)
+        rows = run_query(sql, params)
+        label = resident_name or f"resident {resident_id}"
+        logger.info(f"Deterministic devices plan: resident={label}")
+        answer = (
+            _format_devices_status(rows, f"{label}'s room") if status_mode
+            else _format_devices_for_resident(label, rows)
+        )
+        return {
+            "query": query,
+            "plan": {"_macro": "devices", "scope": "resident", "resident_name": resident_name},
+            "sql": sql,
+            "result": rows,
+            "answer": answer,
+        }
+
+    # 2) Device(s) in a named room ("devices in room 3").
+    room_match = _ROOM_NAME_RE.search(q)
+    if room_match:
+        room_token = room_match.group(1)
+        sql = (
+            "SELECT o.object_id, o.object_type::text, o.device_status, o.status::text, r.room_name "
+            "FROM objects o "
+            "JOIN rooms r ON r.id = o.room_id AND COALESCE(r.is_deleted, false) = false "
+            "WHERE r.community_id = %s AND r.room_name ILIKE %s "
+            f"AND o.object_type::text IN {_DEVICE_TYPES_SQL} "
+            "AND COALESCE(o.is_deleted, false) = false "
+            "ORDER BY o.object_id"
+        )
+        _validate_read_only_sql(sql)
+        rows = run_query(sql, (community_id, f"%{room_token}%"))
+        room_label = rows[0][4] if rows else f"room {room_token}"
+        logger.info(f"Deterministic devices plan: room={room_token}")
+        answer = (
+            _format_devices_status(rows, room_label) if status_mode
+            else _format_devices_for_room(room_label, rows)
+        )
+        return {
+            "query": query,
+            "plan": {"_macro": "devices", "scope": "room", "room": room_token},
+            "sql": sql,
+            "result": rows,
+            "answer": answer,
+        }
+
+    # 3) Community-wide list or count.
+    sql = (
+        "SELECT o.object_id, o.object_type::text, o.device_status, o.status::text, "
+        "r.room_name, rp.name "
+        "FROM objects o "
+        "JOIN rooms r ON r.id = o.room_id AND COALESCE(r.is_deleted, false) = false "
+        "LEFT JOIN room_resident_mapping rrm ON rrm.room_id = r.id AND COALESCE(rrm.is_deleted, false) = false "
+        "LEFT JOIN resident_profile rp ON rp.id = rrm.resident_id AND COALESCE(rp.is_deleted, false) = false "
+        f"WHERE r.community_id = %s AND o.object_type::text IN {_DEVICE_TYPES_SQL} "
+        "AND COALESCE(o.is_deleted, false) = false "
+        "ORDER BY r.room_name, o.object_id"
+    )
+    _validate_read_only_sql(sql)
+    rows = run_query(sql, (community_id,))
+    logger.info("Deterministic devices plan: community-wide list")
+
+    if status_mode:
+        answer = _format_devices_status(rows, "this community")
+    elif _DEVICE_COUNT_RE.search(q):
+        count = len(rows)
+        answer = (
+            f"There {'is' if count == 1 else 'are'} {count} monitoring "
+            f"{'device' if count == 1 else 'devices'} in this community."
+        )
+    else:
+        answer = _format_devices_list(rows)
+    return {
+        "query": query,
+        "plan": {"_macro": "devices", "scope": "community"},
+        "sql": sql,
+        "result": rows,
+        "answer": answer,
     }
 
 
@@ -636,12 +1025,18 @@ def _build_sleep_sql(
     community_id: int,
     resident_id: int | None,
     resident_name: str | None,
+    target_date=None,
 ) -> tuple[str, list]:
-    """All sleep_session segments from the most recent night for a resident.
+    """Sleep_session segments for one night for a resident.
 
-    'Most recent night' = the four segments whose start_duration is the
-    latest per resident. The seed inserts 4 stages per night so a LIMIT 4
-    after ORDER BY start_duration DESC returns one full night.
+    Without ``target_date`` this returns the most recent night: the four
+    segments whose start_duration is the latest. The seed inserts 4 stages
+    per night so LIMIT 4 after ORDER BY start_duration DESC is one full
+    night. With ``target_date`` set, it pins that one night.
+
+    Note: a night's stages straddle two calendar dates (the evening it
+    begins plus the early-morning hours of the next day), so a date filter
+    must be a noon-to-noon window around the evening, not ``= some_date``.
     """
     select_cols = (
         "rp.name, ss.sleep_stage, ss.start_duration, ss.end_duration"
@@ -658,6 +1053,14 @@ def _build_sleep_sql(
         conditions.append("rp.name ILIKE %s")
         params.append(f"%{_resident_filter_value(resident_name)}%")
 
+    if target_date is not None:
+        from datetime import datetime, time, timedelta
+
+        night_lo = datetime.combine(target_date, time(12, 0))
+        night_hi = night_lo + timedelta(days=1)
+        conditions.append("ss.start_duration >= %s AND ss.start_duration < %s")
+        params.extend([night_lo, night_hi])
+
     sql = (
         f"SELECT {select_cols} {from_clause} "
         f"WHERE {' AND '.join(conditions)} "
@@ -667,39 +1070,64 @@ def _build_sleep_sql(
     return sql, params
 
 
-def _format_sleep_answer(rows: list, resident_name: str | None) -> str:
-    if not rows:
-        target = resident_name or "that resident"
-        return f"No sleep records on file for {target}."
+def _build_sleep_history_sql(
+    community_id: int,
+    resident_id: int | None,
+    resident_name: str | None,
+    nights: int = 15,
+) -> tuple[str, list]:
+    """Every sleep segment for a resident across the last ``nights`` nights.
 
-    # Group by night; the seed always produces 4 stages per night so a
-    # 4-row pull from one resident is one night.
-    name = rows[0][0]
-    stages: list[tuple[str, int]] = []
-    total_minutes = 0
-    earliest = None
-    for _name, stage, start, end in sorted(rows, key=lambda r: r[2]):
-        minutes = int((end - start).total_seconds() // 60) if start and end else 0
-        if stage != "awake":
-            total_minutes += minutes
-        if earliest is None or start < earliest:
-            earliest = start
-        stages.append((stage, minutes))
+    Defaults to the full 15-night seed window so trend/"sleep less" answers
+    compare across all retained history, not just the most recent week.
+    Pulls a slightly wider window than asked (``nights + 1`` days) so a night
+    that began late in the window isn't clipped, then the formatter groups
+    into nights and keeps the most recent ``nights``. LIMIT scales with the
+    requested window (≈4 stages/night) — one resident only.
+    """
+    select_cols = "rp.name, ss.sleep_stage, ss.start_duration, ss.end_duration"
+    from_clause = "FROM sleep_sessions ss " + _BOARD_TO_RESIDENT_JOIN.format(sensor="ss")
 
-    def _hm(m: int) -> str:
-        h, m = divmod(m, 60)
-        if h and m:
-            return f"{h}h {m}m"
-        if h:
-            return f"{h}h"
-        return f"{m}m"
+    conditions = [
+        "r.community_id = %s",
+        f"ss.start_duration > now() - INTERVAL '{nights + 1} days'",
+    ]
+    params: list = [community_id]
 
-    when = _human_date(earliest.date()) if earliest else "recently"
-    # Pair stages with article-correct phrasing so the sentence reads as
-    # English: "2h of light sleep, 3h of deep sleep, 2h of REM, and 1h awake".
+    if resident_id is not None:
+        conditions.append("rp.id = %s")
+        params.append(resident_id)
+    elif resident_name:
+        conditions.append("rp.name ILIKE %s")
+        params.append(f"%{_resident_filter_value(resident_name)}%")
+
+    sql = (
+        f"SELECT {select_cols} {from_clause} "
+        f"WHERE {' AND '.join(conditions)} "
+        f"ORDER BY ss.start_duration DESC LIMIT {nights * 4 + 8}"
+    )
+    _validate_read_only_sql(sql)
+    return sql, params
+
+
+# --- Shared sleep formatting helpers ---------------------------------------
+
+
+def _fmt_hm(minutes: int) -> str:
+    """`90 → "1h 30m"`, `120 → "2h"`, `45 → "45m"`."""
+    h, m = divmod(minutes, 60)
+    if h and m:
+        return f"{h}h {m}m"
+    if h:
+        return f"{h}h"
+    return f"{m}m"
+
+
+def _breakdown_phrase(stages: list[tuple[str, int]]) -> str:
+    """"2h of light sleep, 3h of deep sleep, 2h of REM, and 1h awake"."""
     nice_parts = []
     for stage, minutes in stages:
-        duration = _hm(minutes)
+        duration = _fmt_hm(minutes)
         if stage == "awake":
             nice_parts.append(f"{duration} awake")
         elif stage == "rem":
@@ -709,21 +1137,129 @@ def _format_sleep_answer(rows: list, resident_name: str | None) -> str:
         else:
             nice_parts.append(f"{duration} of {stage} sleep")
     if len(nice_parts) > 1:
-        breakdown = ", ".join(nice_parts[:-1]) + f", and {nice_parts[-1]}"
-    else:
-        breakdown = nice_parts[0]
+        return ", ".join(nice_parts[:-1]) + f", and {nice_parts[-1]}"
+    return nice_parts[0] if nice_parts else "no recorded stages"
 
-    duration_reading = classify_sleep_duration(total_minutes)
-    if duration_reading and duration_reading.band == "normal":
-        screening = " That's within a healthy sleep range for an older adult."
-    elif duration_reading:
-        screening = f" {duration_reading.note}"
-    else:
-        screening = ""
 
+def _sleep_screening(total_minutes: int) -> str:
+    reading = classify_sleep_duration(total_minutes)
+    if reading and reading.band == "normal":
+        return " That's within a healthy sleep range for an older adult."
+    if reading:
+        return f" {reading.note}"
+    return ""
+
+
+def _group_sleep_nights(rows: list) -> list[dict]:
+    """Group flat stage rows into per-night summaries, newest night first.
+
+    A sleep night runs from the evening into the next morning, so its four
+    stages straddle two calendar dates. Keying on ``start - 12h`` collapses
+    every segment of one night onto the evening it began — that evening's
+    date is the night's label. Returns dicts with ``date`` (the label date),
+    ``total_minutes`` (asleep, i.e. excluding 'awake'), and ``stages``.
+    """
+    from collections import defaultdict
+    from datetime import timedelta
+
+    by_night: dict = defaultdict(list)
+    for _name, stage, start, end in rows:
+        if start is None:
+            continue
+        key = (start - timedelta(hours=12)).date()
+        by_night[key].append((stage, start, end))
+
+    nights = []
+    for night_date in sorted(by_night, reverse=True):
+        segs = sorted(by_night[night_date], key=lambda s: s[1])
+        total = 0
+        stages: list[tuple[str, int]] = []
+        for stage, start, end in segs:
+            minutes = int((end - start).total_seconds() // 60) if start and end else 0
+            if stage != "awake":
+                total += minutes
+            stages.append((stage, minutes))
+        nights.append({"date": night_date, "total_minutes": total, "stages": stages})
+    return nights
+
+
+def _format_sleep_answer(rows: list, resident_name: str | None, target_date=None) -> str:
+    if not rows:
+        target = resident_name or "that resident"
+        if target_date is not None:
+            return f"No sleep record on file for {target} for the night of {_human_date(target_date)}."
+        return f"No sleep records on file for {target}."
+
+    name = rows[0][0]
+    night = _group_sleep_nights(rows)[0]
+    when = _human_date(night["date"])
+    breakdown = _breakdown_phrase(night["stages"])
+    screening = _sleep_screening(night["total_minutes"])
     return (
-        f"{name} slept about {_hm(total_minutes)} on the night of {when}. "
+        f"{name} slept about {_fmt_hm(night['total_minutes'])} on the night of {when}. "
         f"The night broke down into {breakdown}.{screening}"
+    )
+
+
+def _format_sleep_history(rows: list, resident_name: str | None, max_nights: int = 15) -> str:
+    """List each night's total asleep, newest first, with a low/high callout
+    so a caregiver can compare across the window at a glance."""
+    if not rows:
+        target = resident_name or "that resident"
+        return f"No sleep records on file for {target}."
+
+    name = rows[0][0]
+    nights = _group_sleep_nights(rows)[:max_nights]
+    lines = [
+        f"{name}'s sleep over the last {len(nights)} "
+        f"{'night' if len(nights) == 1 else 'nights'} (most recent first):",
+        "",
+    ]
+    for night in nights:
+        lines.append(
+            f"- {_human_date(night['date'])}: about {_fmt_hm(night['total_minutes'])} asleep"
+        )
+
+    lowest = min(nights, key=lambda n: n["total_minutes"])
+    highest = max(nights, key=lambda n: n["total_minutes"])
+    if lowest["date"] != highest["date"]:
+        lines.append("")
+        lines.append(
+            f"Lowest was {_human_date(lowest['date'])} (~{_fmt_hm(lowest['total_minutes'])}); "
+            f"highest was {_human_date(highest['date'])} (~{_fmt_hm(highest['total_minutes'])})."
+        )
+    return "\n".join(lines)
+
+
+def _format_sleep_extreme(rows: list, resident_name: str | None, which: str) -> str:
+    """`which` = 'least' or 'most' — the night with min/max time asleep,
+    with comparative context across the window."""
+    if not rows:
+        target = resident_name or "that resident"
+        return f"No sleep records on file for {target}."
+
+    name = rows[0][0]
+    nights = _group_sleep_nights(rows)
+    if which == "least":
+        pick, verb = min(nights, key=lambda n: n["total_minutes"]), "the least"
+    else:
+        pick, verb = max(nights, key=lambda n: n["total_minutes"]), "the most"
+
+    when = _human_date(pick["date"])
+    breakdown = _breakdown_phrase(pick["stages"])
+    screening = _sleep_screening(pick["total_minutes"])
+
+    span = ""
+    if len(nights) > 1:
+        lo = min(n["total_minutes"] for n in nights)
+        hi = max(n["total_minutes"] for n in nights)
+        span = (
+            f" Across the last {len(nights)} nights, nightly sleep ranged from "
+            f"{_fmt_hm(lo)} to {_fmt_hm(hi)}."
+        )
+    return (
+        f"{name} slept {verb} on the night of {when} — about {_fmt_hm(pick['total_minutes'])}. "
+        f"That night broke down into {breakdown}.{screening}{span}"
     )
 
 
@@ -740,19 +1276,76 @@ def _detect_sleep_plan(query: str, community_id: int) -> dict | None:
     return {"_macro": "sleep"}
 
 
+# A single-week request → cap the history list at 7 nights so the answer
+# matches the word "week": "this/last/past/the/one/1/a week", "weekly", or
+# "7 days". Anything broader (trend, compare, "all nights", "two weeks",
+# "fortnight", "14/15 days") and the least/most comparison span the full window.
+_WEEK_SCOPED_RE = re.compile(
+    r"\b(?:(?:this|last|past|the|one|1|a)\s+week|weekly|7\s+days)\b",
+    re.IGNORECASE,
+)
+
+
+def _sleep_mode(query: str, target_date) -> str:
+    """Pick the sleep view: a specific 'date', the 'least'/'most' night across
+    the window, the full 'history' list, or the single 'latest' night."""
+    if target_date is not None:
+        return "date"
+    q = query.lower()
+    if _SLEEP_LEAST_RE.search(q):
+        return "least"
+    if _SLEEP_MOST_RE.search(q):
+        return "most"
+    if _SLEEP_HISTORY_RE.search(q):
+        return "history"
+    return "latest"
+
+
+def _sleep_history_nights(query: str, mode: str) -> int:
+    """How many nights back to pull. least/most always use the full 15-night
+    window for the most accurate extreme; a 'this/last week' history list is
+    capped at 7, everything else gets the full 15."""
+    if mode == "history" and _WEEK_SCOPED_RE.search(query):
+        return 7
+    return 15
+
+
 def _step_sleep(query: str, community_id: int) -> dict | None:
     if _detect_sleep_plan(query, community_id) is None:
         return None
     resident_id, resident_name = _resolve_resident_target(query, community_id)
-    sql, params = _build_sleep_sql(community_id, resident_id, resident_name)
-    rows = run_query(sql, params)
-    logger.info(f"Deterministic sleep plan: resident={resident_name or resident_id}")
+    target_date = _extract_target_date(query)
+    mode = _sleep_mode(query, target_date)
+
+    if mode in ("least", "most", "history"):
+        nights = _sleep_history_nights(query, mode)
+        sql, params = _build_sleep_history_sql(
+            community_id, resident_id, resident_name, nights
+        )
+        rows = run_query(sql, params)
+        if mode == "history":
+            answer = _format_sleep_history(rows, resident_name, max_nights=nights)
+        else:
+            answer = _format_sleep_extreme(rows, resident_name, mode)
+    else:
+        sql, params = _build_sleep_sql(community_id, resident_id, resident_name, target_date)
+        rows = run_query(sql, params)
+        answer = _format_sleep_answer(rows, resident_name, target_date)
+
+    logger.info(
+        f"Deterministic sleep plan: resident={resident_name or resident_id} "
+        f"mode={mode} night={target_date or 'n/a'}"
+    )
     return {
         "query": query,
-        "plan": {"_macro": "sleep", "resident_name": resident_name, "resident_id": resident_id},
+        "plan": {
+            "_macro": "sleep", "resident_name": resident_name,
+            "resident_id": resident_id, "mode": mode,
+            "target_date": str(target_date) if target_date else None,
+        },
         "sql": sql,
         "result": rows,
-        "answer": _format_sleep_answer(rows, resident_name),
+        "answer": answer,
     }
 
 
@@ -1045,6 +1638,166 @@ def _step_holistic_status(query: str, community_id: int) -> dict | None:
         },
         "answer": answer,
     }
+
+
+# ===========================================================================
+# LLM-intent dispatch — flexible phrasing for health-data questions
+#
+# The regex handlers above understand the phrasings someone enumerated. This
+# step adds robustness: a cheap keyword GATE decides "is this about a health
+# metric at all" (stable vocabulary), then the LLM extracts the actual intent
+# (resident, metric, time window, comparison, specific date) and we run the
+# SAME deterministic builders below. If the LLM is unavailable or the question
+# isn't health-data, it returns None and the regex handlers take over — so this
+# can only add understanding, never remove it.
+# ===========================================================================
+
+# Broad "does this concern a monitored health metric" gate. Deliberately about
+# DOMAIN vocabulary (stable) — not phrasing/intent (variable, left to the LLM).
+_HEALTH_DOMAIN_GATE_RE = re.compile(
+    r"\b(?:sleep|slept|sleeping|nap|napped|"
+    r"heart\s*rate|hr|pulse|respiration|breathing|vitals?|vital\s+signs?|"
+    r"wellness|well[-\s]?being|wellbeing|"
+    r"fall|falls|fell|fallen|incident|incidents|alert|alerts|"
+    r"notification|notifications|out\s+of\s+bed|out\s+of\s+room|"
+    r"how\s+(?:is|are|'s|s)\b|doing\b|stable\b|okay\b)",
+    re.IGNORECASE,
+)
+
+
+def _resolve_named_resident(name: str, community_id: int) -> str | None:
+    """Map an LLM-extracted resident name to a canonical roster name in this
+    community, or None. Going through the roster keeps the answer grounded —
+    a name the model invented simply won't resolve."""
+    if not name:
+        return None
+    from app.retrievers.sql_retriever import _find_resident_names_in_query
+
+    matches = _find_resident_names_in_query(name, community_id)
+    return matches[0] if matches else None
+
+
+def _health_response(query, domain, sql, rows, answer, **plan_extra):
+    plan = {"_macro": domain, "_via": "llm_intent"}
+    plan.update(plan_extra)
+    return {"query": query, "plan": plan, "sql": sql, "result": rows, "answer": answer}
+
+
+def _dispatch_sleep_spec(query, community_id, resident_name, spec):
+    target_date = spec.get("date")
+    comparison = spec.get("comparison")
+    window = spec.get("window_days")
+
+    if target_date is not None:
+        sql, params = _build_sleep_sql(community_id, None, resident_name, target_date)
+        rows = run_query(sql, params)
+        return _health_response(
+            query, "sleep", sql, rows,
+            _format_sleep_answer(rows, resident_name, target_date), mode="date",
+        )
+    if comparison in ("least", "most"):
+        # Respect an explicit window ("worst sleep THIS WEEK" → over 7 nights,
+        # not all 15); default to the full window when none was given.
+        nights = max(1, min(window or 15, 15))
+        sql, params = _build_sleep_history_sql(community_id, None, resident_name, nights)
+        rows = run_query(sql, params)
+        return _health_response(
+            query, "sleep", sql, rows,
+            _format_sleep_extreme(rows, resident_name, comparison), mode=comparison,
+        )
+    if comparison == "trend" or window:
+        nights = max(1, min(window or 15, 15))  # only 15 nights of data exist
+        sql, params = _build_sleep_history_sql(community_id, None, resident_name, nights)
+        rows = run_query(sql, params)
+        return _health_response(
+            query, "sleep", sql, rows,
+            _format_sleep_history(rows, resident_name, max_nights=nights), mode="history",
+        )
+    # No comparator / window / date → the single most-recent night.
+    sql, params = _build_sleep_sql(community_id, None, resident_name, None)
+    rows = run_query(sql, params)
+    return _health_response(
+        query, "sleep", sql, rows,
+        _format_sleep_answer(rows, resident_name, None), mode="latest",
+    )
+
+
+def _dispatch_incidents_spec(query, community_id, resident_name, spec):
+    window = spec.get("window_days")
+    interval = None
+    if window:
+        interval = "1 day" if window == 1 else f"{int(window)} days"
+    sql, params, meta = _build_incidents_sql(
+        query, community_id, None, resident_name, None,
+        interval=interval,
+        is_fall_query=bool(spec.get("falls_only")),
+        is_active_only=bool(spec.get("active_only")),
+    )
+    rows = run_query(sql, params)
+    return _health_response(
+        query, "incidents", sql, rows, _format_incidents_answer(rows, meta),
+        resident_name=resident_name,
+    )
+
+
+def _step_health_intent(query: str, community_id: int) -> dict | None:
+    """LLM-understood health-data questions → deterministic builders.
+
+    Runs before the regex sensor handlers. Returns None (so they take over)
+    whenever the gate misses, the LLM is unavailable, the question isn't a
+    health-data domain, or a resident-scoped question names no resolvable
+    resident.
+    """
+    if not _HEALTH_DOMAIN_GATE_RE.search(query):
+        return None
+
+    from app.agents.health_intent import extract_health_intent
+
+    spec = extract_health_intent(query)
+    if not spec:
+        return None
+    domain = spec["domain"]
+
+    # Unsupported metric (BP/sugar/SpO2/weight/meds): hand to the existing
+    # honest "not tracked" handler. It has its own keyword guard and returns
+    # None unless that guard ALSO confirms the topic — so a mislabelled
+    # supported question (e.g. heart rate) can't be hijacked into a refusal;
+    # it just falls through to the real handlers below.
+    if domain == "unsupported":
+        from app.retrievers._sql.unsupported import _step_unsupported_metric
+
+        return _step_unsupported_metric(query, community_id)
+
+    # Holistic re-resolves the resident from the query itself; just delegate.
+    if domain == "holistic":
+        return _step_holistic_status(query, community_id)
+
+    resident_name = _resolve_named_resident(spec.get("resident"), community_id)
+
+    if domain in ("sleep", "vitals", "wellness") and not resident_name:
+        # These are single-resident views; without a resolvable resident, let
+        # the regex handlers try (they may refuse honestly or widen scope).
+        return None
+
+    logger.info(f"LLM-intent health plan: domain={domain} resident={resident_name}")
+
+    if domain == "sleep":
+        return _dispatch_sleep_spec(query, community_id, resident_name, spec)
+    if domain == "vitals":
+        sql, params = _build_vitals_sql(community_id, None, resident_name)
+        rows = run_query(sql, params)
+        return _health_response(
+            query, "vitals", sql, rows, _format_vitals_answer(rows, resident_name),
+        )
+    if domain == "wellness":
+        sql, params = _build_wellness_sql(community_id, None, resident_name)
+        rows = run_query(sql, params)
+        return _health_response(
+            query, "wellness", sql, rows, _format_wellness_answer(rows, resident_name),
+        )
+    if domain == "incidents":
+        return _dispatch_incidents_spec(query, community_id, resident_name, spec)
+    return None
 
 
 # Ordered list of (step_name, callable) so sql_retriever can plug all five

@@ -15,9 +15,9 @@ from app.agents.attachments import (
 )
 from app.agents.memory import clear_history, get_history
 from app.core.community import (
+    authorize_community,
     get_community_name,
     get_memory_session_id,
-    invalid_community_error,
 )
 from app.core.config import (
     CORS_ALLOW_CREDENTIALS,
@@ -61,19 +61,84 @@ def health_check():
     return {"status": "healthy", "timestamp": time.time()}
 
 
+@app.get("/users")
+def list_users():
+    """List staff users with their role and allowed community ids.
+
+    Used by the frontend "Login as" picker so a demo viewer can select a
+    user and see only that user's mapped communities. Residents are not
+    included — they aren't in `users` (separated by the schema migration).
+
+    Returns a list ordered by role precedence (admin first, then center
+    owners, caregivers), then by user id within each group.
+    Each row carries the `communities` array the authorize_community gate
+    will accept, so the frontend can mirror the same filter locally.
+    """
+    from app.core.db import DatabaseUnavailableError, run_query
+
+    try:
+        rows = run_query(
+            """
+            SELECT u.id,
+                   u.name,
+                   r.name AS role,
+                   COALESCE(
+                       ARRAY_AGG(cum.community_id ORDER BY cum.community_id)
+                       FILTER (WHERE cum.community_id IS NOT NULL),
+                       ARRAY[]::integer[]
+                   ) AS communities
+            FROM users u
+            JOIN roles r ON r.id = u.role_id
+            LEFT JOIN community_user_mapping cum
+                   ON cum.user_id = u.id
+                  AND COALESCE(cum.is_deleted, false) = false
+            WHERE COALESCE(u.is_deleted, false) = false
+            GROUP BY u.id, u.name, r.name
+            ORDER BY
+                CASE r.name
+                    WHEN 'admin'         THEN 1
+                    WHEN 'center_owner'  THEN 2
+                    WHEN 'caregiver'     THEN 3
+                    ELSE 5
+                END,
+                u.id
+            """
+        )
+    except DatabaseUnavailableError:
+        logger.error("Could not load users for the login picker (DB unavailable).")
+        return {"error": "Login options are temporarily unavailable. Please try again."}
+
+    return {
+        "users": [
+            {"id": uid, "name": name, "role": role, "communities": list(communities)}
+            for uid, name, role, communities in rows
+        ]
+    }
+
+
 class AskRequest(BaseModel):
-    """Request model for the /ask endpoint."""
+    """Request model for the /ask endpoint.
+
+    user_id is optional to preserve the demo / unauthenticated path. When
+    supplied, the request is rejected unless the user is mapped to
+    community_id in community_user_mapping.
+    """
     query: str
     session_id: str = "default"
     community_id: int
+    user_id: int | None = None
 
 
 @app.post("/ask")
 def ask(request: AskRequest):
+    err = authorize_community(request.user_id, request.community_id)
+    if err is not None:
+        return {"error": err}
     return run_chat_graph(
         query=request.query,
         session_id=request.session_id,
         community_id=request.community_id,
+        user_id=request.user_id,
     )
 
 
@@ -83,18 +148,26 @@ def _safe_filename(filename: str) -> str:
     return base or "uploaded_file"
 
 
+# Every endpoint below takes community_id, so every endpoint below applies
+# the same authorize_community gate. Without this, a caller could read or
+# mutate another community's uploads / chat history just by passing a
+# community_id they aren't mapped to. (Pre-fix this was a security gap; the
+# original allowlist check only confirmed community_id was valid, not that
+# the caller had access to it.) user_id is optional everywhere — when
+# omitted, only the allowlist check runs (the demo path).
 @app.post("/upload")
 def upload_file(
     file: UploadFile = File(...),
     session_id: str = Form("default"),
     community_id: int = Form(...),
+    user_id: int | None = Form(None),
 ):
     """Accept a document, extract its text, embed it, and store it for this
     chat session only (ephemeral + private). Returns a safe summary; technical
     errors are logged, never returned."""
-    community_name = get_community_name(community_id)
-    if community_name is None:
-        return {"error": invalid_community_error()}
+    err = authorize_community(user_id, community_id)
+    if err is not None:
+        return {"error": err}
 
     filename = _safe_filename(file.filename)
     try:
@@ -128,7 +201,7 @@ def upload_file(
         logger.error(f"No embeddings produced for upload {filename}")
         return {"error": "I couldn't process the file content right now. Please try again shortly."}
 
-    memory_session_id = get_memory_session_id(session_id, community_id)
+    memory_session_id = get_memory_session_id(session_id, community_id, user_id)
     preview = result.text[:600]
     file_id = add_attachment(
         memory_session_id,
@@ -145,6 +218,7 @@ def upload_file(
         extra={
             "session_id": session_id,
             "community_id": community_id,
+            "user_id": user_id,
             "upload_filename": filename,
             "upload_kind": result.kind,
             "upload_chars": len(result.text),
@@ -164,59 +238,78 @@ def upload_file(
 
 
 @app.get("/upload")
-def list_session_uploads(session_id: str, community_id: int):
+def list_session_uploads(
+    session_id: str,
+    community_id: int,
+    user_id: int | None = None,
+):
     """List active attachments for a session (used by the UI to rehydrate chips)."""
-    if get_community_name(community_id) is None:
-        return {"error": invalid_community_error()}
-    memory_session_id = get_memory_session_id(session_id, community_id)
+    err = authorize_community(user_id, community_id)
+    if err is not None:
+        return {"error": err}
+    memory_session_id = get_memory_session_id(session_id, community_id, user_id)
     return {"files": list_attachments(memory_session_id)}
 
 
 @app.delete("/upload/{file_id}")
-def delete_session_upload(file_id: str, session_id: str, community_id: int):
+def delete_session_upload(
+    file_id: str,
+    session_id: str,
+    community_id: int,
+    user_id: int | None = None,
+):
     """Remove a single uploaded file from a session."""
-    if get_community_name(community_id) is None:
-        return {"error": invalid_community_error()}
-    memory_session_id = get_memory_session_id(session_id, community_id)
+    err = authorize_community(user_id, community_id)
+    if err is not None:
+        return {"error": err}
+    memory_session_id = get_memory_session_id(session_id, community_id, user_id)
     removed = clear_attachment(memory_session_id, file_id)
     return {"file_id": file_id, "status": "removed" if removed else "not_found"}
 
 
 @app.get("/history/{session_id}")
-def get_session_history(session_id: str, community_id: int):
+def get_session_history(
+    session_id: str,
+    community_id: int,
+    user_id: int | None = None,
+):
     """Retrieve the chat history for a given session."""
-    community_name = get_community_name(community_id)
-    if community_name is None:
-        return {"error": invalid_community_error()}
+    err = authorize_community(user_id, community_id)
+    if err is not None:
+        return {"error": err}
 
-    memory_session_id = get_memory_session_id(session_id, community_id)
+    memory_session_id = get_memory_session_id(session_id, community_id, user_id)
     history = get_history(memory_session_id)
 
     return {
         "session_id": session_id,
         "memory_session_id": memory_session_id,
         "community_id": community_id,
-        "community_name": community_name,
+        "community_name": get_community_name(community_id),
         "history": history,
         "turn_count": len(history),
     }
 
 
 @app.delete("/history/{session_id}")
-def clear_session_history(session_id: str, community_id: int):
+def clear_session_history(
+    session_id: str,
+    community_id: int,
+    user_id: int | None = None,
+):
     """Clear the chat history for a given session."""
-    community_name = get_community_name(community_id)
-    if community_name is None:
-        return {"error": invalid_community_error()}
+    err = authorize_community(user_id, community_id)
+    if err is not None:
+        return {"error": err}
 
-    memory_session_id = get_memory_session_id(session_id, community_id)
+    memory_session_id = get_memory_session_id(session_id, community_id, user_id)
     clear_history(memory_session_id)
 
     return {
         "session_id": session_id,
         "memory_session_id": memory_session_id,
         "community_id": community_id,
-        "community_name": community_name,
+        "community_name": get_community_name(community_id),
         "status": "cleared",
     }
 

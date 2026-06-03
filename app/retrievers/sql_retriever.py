@@ -105,6 +105,8 @@ from app.retrievers._sql.names import (  # noqa: F401
     _extract_excluded_resident_name,
 )
 from app.retrievers._sql.sensors import (  # noqa: F401
+    _step_devices,
+    _step_health_intent,
     _step_incidents,
     _step_vitals,
     _step_sleep,
@@ -113,6 +115,7 @@ from app.retrievers._sql.sensors import (  # noqa: F401
 )
 from app.retrievers._sql.care import (  # noqa: F401
     _step_care_priority,
+    _step_compare_residents,
     _step_fall_ranking,
 )
 from app.retrievers._sql.identity import (  # noqa: F401
@@ -1511,7 +1514,16 @@ def _step_resident_collection_profile(query, community_id):
 # handlers were retired with the legacy schema and are not on this list.
 _SQL_DISPATCH_STEPS = [
     _step_community_scope_mismatch,
-    # Multi-signal care intent wins FIRST. "Who needs the most care?" and
+    # Device / sensor questions win early: "list the devices", "what device is
+    # in X's room". Placed before the vitals handler (a "vitals sensor" query
+    # contains the word "vitals") and before the resident handlers (so
+    # "list of devices" isn't mistaken for a resident list).
+    _step_devices,
+    # Multi-resident comparison ("compare X and Y", "who sleeps better, X or
+    # Y?") wins before the single-resident sensor handlers, which would
+    # otherwise grab just the first name and silently drop the comparison.
+    _step_compare_residents,         # side-by-side metrics + verdict
+    # Multi-signal care intent wins next. "Who needs the most care?" and
     # "who has had the most falls?" both look superficially like incident
     # or resident-aggregate queries and would mis-route without these.
     _step_care_priority,             # composite priority score
@@ -1520,6 +1532,13 @@ _SQL_DISPATCH_STEPS = [
     # (vitals/sleep) land here before the resident-profile rules, which
     # would otherwise try to treat "fall" as a profile-field synonym for
     # no_of_falls.
+    #
+    # LLM-intent understanding runs FIRST among the sensor steps: for any
+    # health-metric question it extracts intent and drives the deterministic
+    # builders, so flexible phrasing works. It returns None (handing off to the
+    # regex steps below) whenever the LLM is unavailable or the question isn't a
+    # health-data domain — so behaviour is unchanged when the LLM is offline.
+    _step_health_intent,             # LLM-understood health-metric questions
     _step_incidents,                 # falls / incidents / active alerts
     _step_vitals,                    # heart rate / respiration / vitals
     _step_sleep,                     # last night's sleep_sessions breakdown

@@ -1,3 +1,9 @@
+# ===========================================================================
+# This file handles questions about things KuboCare simply does not measure —
+# like blood pressure, blood sugar, weight, or medications. Instead of guessing
+# or inventing a number, it gives one honest sentence ("that isn't tracked")
+# and reminds you what the system CAN tell you.
+# ===========================================================================
 """Deterministic guard for resident questions about data the schema doesn't hold.
 
 Why this exists

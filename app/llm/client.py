@@ -108,14 +108,25 @@ def ask_with_messages(
     response_format: str | None = None,
     num_predict: int = 100,
     temperature: float | None = None,
+    timeout: float | None = None,
 ) -> str:
-    """Call the vLLM OpenAI-compatible chat API and return assistant content."""
+    """Call the vLLM OpenAI-compatible chat API and return assistant content.
+
+    ``timeout`` (seconds) overrides the client default for this one call —
+    useful for latency-sensitive callers (e.g. intent extraction) that want to
+    fail fast and fall back rather than block on a slow/unreachable server.
+    """
     invoke_kwargs = {
         "temperature": LLM_DATA_TEMPERATURE if temperature is None else temperature,
         "max_tokens": num_predict,
     }
     if response_format == "json":
         invoke_kwargs["response_format"] = {"type": "json_object"}
+    if timeout is not None:
+        # Fast-fail mode: bound the wait AND skip the SDK's default 2 retries,
+        # otherwise a single 8s timeout becomes ~24s (1 try + 2 retries).
+        invoke_kwargs["timeout"] = timeout
+        invoke_kwargs["max_retries"] = 0
 
     temp_llm = llm.bind(**invoke_kwargs)
     response = temp_llm.invoke([
