@@ -168,7 +168,7 @@ are provided for everything except the database credentials.
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `LLM_BASE_URL` | OpenAI-compatible base URL | `http://10.0.130.10:8001/v1` |
+| `LLM_BASE_URL` | OpenAI-compatible base URL | `Any URL` |
 | `LLM_API_KEY` | API key for the LLM endpoint | `dummy` |
 | `LLM_MODEL` | Model name | `Qwen/Qwen2.5-7B-Instruct-AWQ` |
 | `LLM_DATA_TEMPERATURE` | Temperature for data answers | `0.0` |
