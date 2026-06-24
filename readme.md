@@ -22,7 +22,6 @@ answers it cannot ground.
 - [API reference](#api-reference)
 - [Testing](#testing)
 - [Security model](#security-model)
-- [License](#license)
 
 ---
 
