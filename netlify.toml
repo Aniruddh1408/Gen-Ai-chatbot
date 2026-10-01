@@ -1,0 +1,6 @@
+# The FastAPI backend (app/api) cannot run on Netlify. Netlify serves the
+# static chat UI from app/frontend; API calls are forwarded to the externally
+# hosted backend by netlify/edge-functions/api-proxy.ts (set BACKEND_URL).
+[build]
+  publish = "app/frontend"
+  command = ""
